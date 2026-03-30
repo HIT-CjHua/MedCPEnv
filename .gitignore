@@ -14,7 +14,17 @@
 data/
 *.jsonl
 *.json
-!reference/*.json
+
+# -----------------------------------------------------------------------------
+# Project Documents (not for repo)
+# -----------------------------------------------------------------------------
+notebook/
+reference/
+SOUL.md
+TODO.md
+PREVIEW.md
+USER.md
+TOOLS.md
 
 # -----------------------------------------------------------------------------
 # Output & Results
@@ -23,7 +33,6 @@ output/
 results/
 logs/
 sessions/
-notebook/.ipynb_checkpoints/
 
 # -----------------------------------------------------------------------------
 # Python
