@@ -20,13 +20,16 @@ numpy>=1.24.0                    # 数值计算 (chromadb依赖)
 # -----------------------------------------------------------------------------
 # Machine Learning & RL Training
 # -----------------------------------------------------------------------------
-transformers>=4.36.0             # HuggingFace Transformers
-datasets>=2.14.0                 # HuggingFace Datasets
-accelerate>=0.24.0               # 分布式训练加速
+# 注意: Agentic RL (带tools) 需要 transformers >= 5.0.0
+# 安装开发版: pip install --pre transformers
+transformers>=5.0.0.dev0           # HuggingFace Transformers (agentic需要5.0+)
+datasets>=2.14.0                   # HuggingFace Datasets
+accelerate>=0.24.0                 # 分布式训练加速
+jmespath>=1.0.0                    # TRL工具调用解析依赖
 
-# RL Training (可选)
-trl>=0.7.0                       # Transformer Reinforcement Learning
-peft>=0.7.0                      # Parameter-Efficient Fine-Tuning (LoRA)
+# RL Training
+trl>=0.27.0                        # Transformer Reinforcement Learning
+peft>=0.7.0                        # Parameter-Efficient Fine-Tuning (LoRA)
 
 # vLLM 加速 (可选)
 # vllm>=0.3.0                     # 高性能推理
