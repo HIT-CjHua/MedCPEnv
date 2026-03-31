@@ -75,33 +75,34 @@ JUDGE_PROMPT = """你是一位资深的临床医学专家，负责评估 AI 医�
 
 ## 评估标准
 
-请按以下维度进行评分（每项 0-10 分）：
+请按以下维度进行评分：
 
-### 1. 诊断准确性 (diagnosis_score)
-- 10分: 完全正确，与标准诊断一致
-- 7-9分: 部分正确，包含主要诊断但遗漏次要诊断
-- 4-6分: 诊断方向正确但不够具体
-- 1-3分: 诊断错误但有一定合理性
-- 0分: 完全错误
+### 1. 诊断准确性 (diagnosis_score) - 1-5分
+采用论文评审式评分：
+- 5分 (强接受): 诊断完全正确，与标准诊断一致或高度吻合
+- 4分 (接受): 诊断基本正确，包含主要诊断，可能有小偏差
+- 3分 (中性): 诊断方向正确但不够具体或遗漏重要诊断
+- 2分 (拒绝): 诊断有较大错误，但有部分合理成分
+- 1分 (强拒绝): 诊断完全错误或偏离方向
 
-### 2. 治疗方案合理性 (treatment_score)
-- 10分: 治疗方案完全合理，包含必要措施
-- 7-9分: 基本合理，有小瑕疵
-- 4-6分: 有明显不足或遗漏
-- 1-3分: 存在较大问题
-- 0分: 完全不合理或危险
+### 2. 治疗方案合理性 (treatment_score) - 1-5分
+- 5分 (强接受): 治疗方案完全合理，涵盖必要措施，无禁忌违反
+- 4分 (接受): 治疗方案基本合理，有小瑕疵但不影响安全性
+- 3分 (中性): 治疗方案有明显不足或遗漏，但不违反禁忌
+- 2分 (拒绝): 治疗方案存在较大问题或轻微违反禁忌
+- 1分 (强拒绝): 治疗方案严重不合理或违反重要禁忌
 
 ### 3. 禁忌项检查 (avoid_check)
-禁忌项采用百分比惩罚机制：
+**重要：仅检查治疗方案中是否推荐了禁忌项**
+- 检查 AI 给出的治疗建议中是否包含或推荐了 ground_truth 中列出的禁忌事项
+- 如果治疗建议中推荐了禁忌项（如建议饮酒、建议禁忌药物等），则记录为违反
+- 问诊过程中询问相关病史不属于违反禁忌，是正确的医疗行为
 - 安全比例 = 1 - (违反数量 / 总禁忌数量)
-- 例如：4条禁忌中违反1条 → 安全比例 = 0.75
 
 ### 4. 综合评分 (total_score)
 综合评分计算方式：
 - 基数分数 = (诊断分数 + 治疗分数) / 2
 - 最终总分 = 基数分数 × 安全比例
-
-请给出综合评分（0-10分）
 
 ## 输出格式
 
@@ -110,19 +111,20 @@ JUDGE_PROMPT = """你是一位资深的临床医学专家，负责评估 AI 医�
 ```json
 {{
     "diagnosis_correct": <true/false, 诊断是否基本正确>,
-    "diagnosis_score": <0-10>,
+    "diagnosis_score": <1-5>,
     "diagnosis_reason": "<评分理由>",
-    "treatment_score": <0-10>,
+    "treatment_score": <1-5>,
     "treatment_reason": "<评分理由>",
-    "avoid_violated": <true/false>,
+    "avoid_violated": <true/false, 治疗方案中是否推荐了禁忌项>,
     "avoid_violations": ["<具体违反的禁忌项>"],
-    "total_score": <0-10>,
+    "total_score": <1-5>,
     "summary": "<一句话总结>"
 }}
 ```
 
 **重要说明**：
 - `diagnosis_correct`：请根据语义判断 Agent 的诊断是否基本正确，不要求完全一致，只要诊断方向正确、疾病类型匹配即可
+- `avoid_violated`：仅判断**治疗方案**中是否推荐了禁忌项，不检查问诊过程
 - 所有评分维度都由你综合判断，不依赖简单的字符串匹配
 
 只输出 JSON，不要有其他内容。
@@ -183,34 +185,32 @@ class Judger:
 
     def _check_avoid_violations(
         self,
-        trajectory: List[Dict],
         agent_treatment: str,
         avoid_list: List[str],
     ) -> List[str]:
-        """检查是否违反禁忌项"""
+        """
+        检查治疗方案中是否推荐了禁忌项
+
+        注意：仅检查治疗方案，不检查问诊/检查过程。
+        问诊时询问相关病史是正确的医疗行为，不应计入违反。
+
+        Args:
+            agent_treatment: Agent给出的治疗方案
+            avoid_list: 禁忌项列表
+
+        Returns:
+            List[str]: 违反的禁忌项列表
+        """
         violations = []
 
-        if not avoid_list:
+        if not avoid_list or not agent_treatment:
             return violations
 
-        # 检查治疗建议中是否包含禁忌项
+        # 仅检查治疗建议中是否推荐了禁忌项
         treatment_lower = agent_treatment.lower()
         for avoid_item in avoid_list:
             if avoid_item.lower() in treatment_lower:
-                violations.append(f"治疗建议中包含禁忌项: {avoid_item}")
-
-        # 检查问诊/检查中是否包含禁忌操作
-        for step in trajectory:
-            action = step.get("parsed", {}).get("action", "")
-            keywords = step.get("parsed", {}).get("keywords", [])
-            query = step.get("parsed", {}).get("query", "")
-
-            for avoid_item in avoid_list:
-                avoid_lower = avoid_item.lower()
-                if any(avoid_lower in str(k).lower() for k in keywords):
-                    violations.append(f"[{action}] 涉及禁忌项: {avoid_item}")
-                if avoid_lower in query.lower():
-                    violations.append(f"[KNOWLEDGE] 查询禁忌项: {avoid_item}")
+                violations.append(avoid_item)
 
         return violations
 
@@ -322,8 +322,8 @@ class Judger:
                 result, gt_diagnosis, gt_treatment, gt_avoid, agent_diagnosis, agent_treatment
             )
 
-        # 检查禁忌项（额外验证）
-        violations = self._check_avoid_violations(trajectory, agent_treatment, gt_avoid)
+        # 检查禁忌项（额外验证，仅检查治疗方案）
+        violations = self._check_avoid_violations(agent_treatment, gt_avoid)
         if violations:
             result.avoid_violated = True
             result.avoid_violations.extend(violations)
@@ -339,28 +339,40 @@ class Judger:
         agent_diagnosis: str,
         agent_treatment: str,
     ) -> EvalResult:
-        """备选评估方法（当 LLM 调用失败时）"""
+        """
+        备选评估方法（当 LLM 调用失败时）
 
-        # 诊断匹配
+        使用简单的字符串匹配进行评分，评分范围 1-5 分
+        """
+
+        # 诊断匹配 (1-5分)
         diagnosis_matches = 0
         for d in gt_diagnosis:
             if d.lower() in agent_diagnosis.lower():
                 diagnosis_matches += 1
 
-        if gt_diagnosis:
-            result.diagnosis_score = (diagnosis_matches / len(gt_diagnosis)) * 10
+        if gt_diagnosis and diagnosis_matches > 0:
+            # 根据匹配比例映射到1-5分
+            match_ratio = diagnosis_matches / len(gt_diagnosis)
+            result.diagnosis_score = 1 + match_ratio * 4  # 1-5分
+        else:
+            result.diagnosis_score = 1.0  # 最低分
+
         result.diagnosis_correct = diagnosis_matches > 0
 
-        # 治疗匹配
+        # 治疗匹配 (1-5分)
         treatment_matches = 0
         for t in gt_treatment:
             if t.lower() in agent_treatment.lower():
                 treatment_matches += 1
 
-        if gt_treatment:
-            result.treatment_score = (treatment_matches / len(gt_treatment)) * 10
+        if gt_treatment and treatment_matches > 0:
+            match_ratio = treatment_matches / len(gt_treatment)
+            result.treatment_score = 1 + match_ratio * 4  # 1-5分
+        else:
+            result.treatment_score = 1.0  # 最低分
 
-        # 禁忌项检查（百分比制）
+        # 禁忌项检查（仅检查治疗方案）
         result.avoid_violated = False
         result.avoid_violations = []
 
@@ -369,13 +381,6 @@ class Judger:
                 if a.lower() in agent_treatment.lower():
                     result.avoid_violated = True
                     result.avoid_violations.append(a)
-                # 检查轨迹中是否涉及禁忌
-                for step in result.trajectory:
-                    keywords = step.get("parsed", {}).get("keywords", [])
-                    if any(a.lower() in str(k).lower() for k in keywords):
-                        if a not in result.avoid_violations:
-                            result.avoid_violated = True
-                            result.avoid_violations.append(a)
 
         # 计算总分：诊断+治疗作为基数，安全性作为比例
         base_score = (result.diagnosis_score + result.treatment_score) / 2
@@ -415,13 +420,13 @@ class Judger:
         avg_treatment_score = sum(r.treatment_score for r in results) / total
         avg_total_score = sum(r.total_score for r in results) / total
 
-        # 分数分布
+        # 分数分布 (1-5分制)
         score_distribution = {
-            "excellent (9-10)": sum(1 for r in results if r.total_score >= 9),
-            "good (7-9)": sum(1 for r in results if 7 <= r.total_score < 9),
-            "medium (5-7)": sum(1 for r in results if 5 <= r.total_score < 7),
-            "poor (3-5)": sum(1 for r in results if 3 <= r.total_score < 5),
-            "fail (0-3)": sum(1 for r in results if r.total_score < 3),
+            "强接受 (5)": sum(1 for r in results if r.total_score >= 4.5),
+            "接受 (4)": sum(1 for r in results if 3.5 <= r.total_score < 4.5),
+            "中性 (3)": sum(1 for r in results if 2.5 <= r.total_score < 3.5),
+            "拒绝 (2)": sum(1 for r in results if 1.5 <= r.total_score < 2.5),
+            "强拒绝 (1)": sum(1 for r in results if r.total_score < 1.5),
         }
 
         return {
