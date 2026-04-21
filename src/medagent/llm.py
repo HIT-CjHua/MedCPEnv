@@ -122,12 +122,16 @@ class LLMClient:
 
     def __init__(
         self,
+        # 百炼 codingplan 配置 (默认)
         base_url: str = "https://coding.dashscope.aliyuncs.com/v1",
         api_key: Optional[str] = None,
         model_name: str = "qwen3.5-plus",
         temperature: float = 0.7,
         max_tokens: int = 2048,
         timeout: float = 120.0,
+        # 可选：指定其他 API key 环境变量
+        # 对于 302API: base_url="https://api.302.ai/v1", api_key_env="302_API_KEY"
+        # 对于百炼非codingplan: base_url="https://dashscope.aliyuncs.com/compatible-mode/v1", api_key_env="DASHSCOPE_API_KEY"
     ):
         self.base_url = base_url
         self.api_key = api_key or os.getenv("DASHSCOPE_API_KEY_CP", "EMPTY")

@@ -40,6 +40,7 @@ ReAct式医疗问诊Agent
 """
 
 import re
+import time
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass, field
 
@@ -71,7 +72,8 @@ class MedAgent:
     ReAct 循环: Reasoning -> Acting -> Observing
     """
 
-    SYSTEM_PROMPT = """你是一名专业的医疗问诊AI助手。你需要根据患者的主诉，通过问诊、检查和知识查询来做出诊断。
+    SYSTEM_PROMPT = """/no_think
+你是一名专业的医疗问诊AI助手。你需要根据患者的主诉，通过问诊、检查和知识查询来做出诊断。
 
 ## 可用工具
 
@@ -162,6 +164,18 @@ class MedAgent:
         if match:
             return match.group(1).strip()
         return None
+
+    def _remove_thinking(self, text: str) -> str:
+        """
+        移除思考内容，只保留实际输出
+
+        过滤掉 <think>...</think> 或 <thinking>...</thinking> 标签内容
+        """
+        # 移除 <think>...</think>
+        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        # 移除 <thinking>...</thinking>
+        text = re.sub(r'<thinking>.*?</thinking>', '', text, flags=re.DOTALL)
+        return text.strip()
 
     def _parse_action(self, response: str) -> Dict:
         """
@@ -269,7 +283,12 @@ class MedAgent:
 
         # Re: LLM 生成
         self._log("Thinking...")
+        start_time = time.time()
         response = self.llm_client.call(messages=self.state.messages, temperature=0.7)
+        latency = time.time() - start_time
+
+        # 估算token数（中文约1.5字符/token，英文约4字符/token）
+        estimated_tokens = len(response) // 2  # 简单估算
 
         # 解析动作
         parsed = self._parse_action(response)
@@ -277,11 +296,13 @@ class MedAgent:
 
         self._log(f"Action: {action}")
 
-        # 记录轨迹
+        # 记录轨迹（包含latency和tokens）
         self.state.trajectory.append({
             "step": self.state.step_count,
             "response": response,
             "parsed": parsed,
+            "latency": latency,
+            "estimated_tokens": estimated_tokens,
         })
 
         # Act: 执行工具
@@ -292,7 +313,9 @@ class MedAgent:
             # Observe: 摘要并追加到 messages
             observation = self._summarize_observation(action, result)
 
-            self.state.messages.append({"role": "assistant", "content": response})
+            # 过滤思考内容后再追加
+            filtered_response = self._remove_thinking(response)
+            self.state.messages.append({"role": "assistant", "content": filtered_response})
             self.state.messages.append({"role": "user", "content": f"观察结果:\n{observation}"})
 
             # 更新轨迹
@@ -304,7 +327,9 @@ class MedAgent:
             result = self._execute_action(parsed)
             self._log(f"Final: {result}")
 
-            self.state.messages.append({"role": "assistant", "content": response})
+            # 过滤思考内容后再追加
+            filtered_response = self._remove_thinking(response)
+            self.state.messages.append({"role": "assistant", "content": filtered_response})
             self.state.trajectory[-1]["observation"] = result
 
             return {"action": "FINAL", "diagnosis": self.state.diagnosis, "treatment": self.state.treatment, "done": True}, True
@@ -312,7 +337,9 @@ class MedAgent:
         else:
             # 解析失败，提示重试
             self._log("Invalid action, retrying...")
-            self.state.messages.append({"role": "assistant", "content": response})
+            # 过滤思考内容后再追加
+            filtered_response = self._remove_thinking(response)
+            self.state.messages.append({"role": "assistant", "content": filtered_response})
             self.state.messages.append({"role": "user", "content": "请使用正确的 XML 格式输出动作。"})
 
             return {"action": "INVALID", "result": "格式错误", "done": False}, False

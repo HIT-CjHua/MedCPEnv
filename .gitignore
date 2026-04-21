@@ -116,6 +116,20 @@ chroma*/
 *.pid
 
 # -----------------------------------------------------------------------------
+# Early Experimental Scripts (not for repo)
+# -----------------------------------------------------------------------------
+scripts/pipeline_comparison.py
+scripts/data_pipeline*.py
+scripts/dual_model_judge.py
+scripts/mimic_pipeline.py
+scripts/test_*.py
+scripts/m2_full_judge.py
+scripts/m3_generate_10k.py
+scripts/med_llm.sh
+scripts/run_mimic_shard.py
+scripts/batch_mimic_pipeline.py
+
+# -----------------------------------------------------------------------------
 # Memory & Sessions (Claude Code)
 # -----------------------------------------------------------------------------
 memory/

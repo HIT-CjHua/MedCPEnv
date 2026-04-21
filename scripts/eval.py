@@ -36,7 +36,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.schema import MedicalCase
-from src.medagent import LLMClient, KnowledgeBase, MedAgent, Judger, EvalResult
+from src.medagent import LLMClient, KnowledgeBase, MedAgent, Judger, EvalResult, EfficiencyStats, CostEvaluator
 from src.medagent.llm import api_counter
 
 
@@ -145,17 +145,34 @@ def run_evaluation(
                                 case_id=case_id,
                                 diagnosis_correct=data.get("diagnosis_correct", False),
                                 diagnosis_score=data.get("diagnosis_score", 0),
+                                diagnosis_reason=data.get("diagnosis_reason", ""),
+                                treatment_correct=data.get("treatment_correct", False),
                                 treatment_score=data.get("treatment_score", 0),
-                                safety_ratio=data.get("safety_ratio", 1.0),
-                                base_score=data.get("base_score", 0),
-                                total_score=data.get("total_score", 0),
+                                treatment_reason=data.get("treatment_reason", ""),
                                 avoid_violated=data.get("avoid_violated", False),
+                                avoid_score=data.get("avoid_score", 0),
+                                avoid_reason=data.get("avoid_reason", ""),
                                 avoid_violations=data.get("avoid_violations", []),
+                                total_score=data.get("total_score", 0),
                                 trajectory=data.get("trajectory", []),
                                 ground_truth=data.get("ground_truth", {}),
                                 agent_diagnosis=data.get("agent_diagnosis", ""),
                                 agent_treatment=data.get("agent_treatment", ""),
+                                total_cost=data.get("total_cost", 0),
                             )
+                            # 恢复efficiency字段
+                            eff_data = data.get("efficiency", {})
+                            results_dict[case_id].efficiency.total_steps = eff_data.get("total_steps", 0)
+                            results_dict[case_id].efficiency.ask_count = eff_data.get("ask_count", 0)
+                            results_dict[case_id].efficiency.exam_count = eff_data.get("exam_count", 0)
+                            results_dict[case_id].efficiency.knowledge_count = eff_data.get("knowledge_count", 0)
+                            results_dict[case_id].efficiency.exam_items = eff_data.get("exam_items", 0)
+                            results_dict[case_id].efficiency.ask_items = eff_data.get("ask_items", 0)
+                            results_dict[case_id].efficiency.total_tokens = eff_data.get("total_tokens", 0)
+                            results_dict[case_id].efficiency.total_latency = eff_data.get("total_latency", 0)
+                            results_dict[case_id].efficiency.avg_tokens_per_step = eff_data.get("avg_tokens_per_step", 0)
+                            results_dict[case_id].efficiency.avg_latency_per_step = eff_data.get("avg_latency_per_step", 0)
+                            results_dict[case_id].efficiency.tokens_per_second = eff_data.get("tokens_per_second", 0)
             print(f"  已恢复 {len(processed_ids)} 条结果")
         except Exception as e:
             print(f"  checkpoint 加载失败: {e}")
@@ -181,16 +198,33 @@ def run_evaluation(
                         "case_id": r.case_id,
                         "diagnosis_correct": r.diagnosis_correct,
                         "diagnosis_score": r.diagnosis_score,
+                        "diagnosis_reason": r.diagnosis_reason,
+                        "treatment_correct": r.treatment_correct,
                         "treatment_score": r.treatment_score,
-                        "safety_ratio": r.safety_ratio,
-                        "base_score": r.base_score,
-                        "total_score": r.total_score,
+                        "treatment_reason": r.treatment_reason,
                         "avoid_violated": r.avoid_violated,
+                        "avoid_score": r.avoid_score,
+                        "avoid_reason": r.avoid_reason,
                         "avoid_violations": r.avoid_violations,
+                        "total_score": r.total_score,
                         "trajectory": r.trajectory,
                         "ground_truth": r.ground_truth,
                         "agent_diagnosis": r.agent_diagnosis,
                         "agent_treatment": r.agent_treatment,
+                        "total_cost": r.total_cost,
+                        "efficiency": {
+                            "total_steps": r.efficiency.total_steps,
+                            "ask_count": r.efficiency.ask_count,
+                            "exam_count": r.efficiency.exam_count,
+                            "knowledge_count": r.efficiency.knowledge_count,
+                            "exam_items": r.efficiency.exam_items,
+                            "ask_items": r.efficiency.ask_items,
+                            "total_tokens": r.efficiency.total_tokens,
+                            "total_latency": r.efficiency.total_latency,
+                            "avg_tokens_per_step": r.efficiency.avg_tokens_per_step,
+                            "avg_latency_per_step": r.efficiency.avg_latency_per_step,
+                            "tokens_per_second": r.efficiency.tokens_per_second,
+                        },
                     }, ensure_ascii=False) + "\n")
         except Exception as e:
             print(f"  checkpoint 保存失败: {e}")
@@ -258,6 +292,7 @@ def generate_report(
     output_dir: str,
     model_name: str,
     timestamp: str,
+    enable_cost: bool = False,
 ) -> Dict[str, Any]:
     """生成评测报告"""
 
@@ -267,47 +302,92 @@ def generate_report(
         return {}
 
     diagnosis_correct = sum(1 for r in results if r.diagnosis_correct)
+    treatment_correct = sum(1 for r in results if r.treatment_correct)
     avoid_violated = sum(1 for r in results if r.avoid_violated)
 
     avg_scores = {
         "diagnosis": sum(r.diagnosis_score for r in results) / total,
         "treatment": sum(r.treatment_score for r in results) / total,
+        "avoid": sum(r.avoid_score for r in results) / total,
         "total": sum(r.total_score for r in results) / total,
     }
 
+    # 效率统计
+    avg_steps = sum(r.efficiency.total_steps for r in results) / total
+    avg_exam_items = sum(r.efficiency.exam_items for r in results) / total
+    avg_tokens = sum(r.efficiency.total_tokens for r in results) / total
+    avg_latency = sum(r.efficiency.total_latency for r in results) / total
+    avg_tokens_per_second = sum(r.efficiency.tokens_per_second for r in results) / total
+
+    # 分数分布 (1-5分制)
     score_distribution = {
-        "excellent_9_10": sum(1 for r in results if r.total_score >= 9),
-        "good_7_9": sum(1 for r in results if 7 <= r.total_score < 9),
-        "medium_5_7": sum(1 for r in results if 5 <= r.total_score < 7),
-        "poor_3_5": sum(1 for r in results if 3 <= r.total_score < 5),
-        "fail_0_3": sum(1 for r in results if r.total_score < 3),
+        "excellent_4_5": sum(1 for r in results if r.total_score >= 4),
+        "good_3_4": sum(1 for r in results if 3 <= r.total_score < 4),
+        "medium_2_3": sum(1 for r in results if 2 <= r.total_score < 3),
+        "poor_1_2": sum(1 for r in results if r.total_score < 2),
     }
+
+    # 费用统计
+    cost_stats = None
+    if enable_cost:
+        valid_costs = [r.total_cost for r in results if r.total_cost > 0]
+        if valid_costs:
+            cost_stats = {
+                "avg_cost": sum(valid_costs) / len(valid_costs),
+                "max_cost": max(valid_costs),
+                "min_cost": min(valid_costs),
+                "total_cost": sum(valid_costs),
+            }
 
     report = {
         "meta": {
             "model": model_name,
             "timestamp": timestamp,
             "total_cases": total,
+            "enable_cost": enable_cost,
         },
         "summary": {
-            "diagnosis_accuracy": diagnosis_correct / total,
-            "diagnosis_avg_score": avg_scores["diagnosis"],
-            "treatment_avg_score": avg_scores["treatment"],
+            "diagnosis": {
+                "accuracy": diagnosis_correct / total,
+                "avg_score": avg_scores["diagnosis"],
+            },
+            "treatment": {
+                "accuracy": treatment_correct / total,
+                "avg_score": avg_scores["treatment"],
+            },
+            "safety": {
+                "violation_rate": avoid_violated / total,
+                "avg_score": avg_scores["avoid"],
+            },
+            "efficiency": {
+                "avg_steps": avg_steps,
+                "avg_exam_items": avg_exam_items,
+                "avg_tokens": avg_tokens,
+                "avg_latency": avg_latency,
+                "avg_tokens_per_second": avg_tokens_per_second,
+            },
             "total_avg_score": avg_scores["total"],
-            "avoid_violation_rate": avoid_violated / total,
         },
+        "cost_stats": cost_stats,
         "score_distribution": score_distribution,
         "details": [
             {
                 "case_id": r.case_id,
-                "diagnosis_score": r.diagnosis_score,
-                "treatment_score": r.treatment_score,
-                "total_score": r.total_score,
                 "diagnosis_correct": r.diagnosis_correct,
+                "diagnosis_score": r.diagnosis_score,
+                "diagnosis_reason": r.diagnosis_reason,
+                "treatment_correct": r.treatment_correct,
+                "treatment_score": r.treatment_score,
+                "treatment_reason": r.treatment_reason,
                 "avoid_violated": r.avoid_violated,
-                "agent_diagnosis": r.agent_diagnosis,
-                "agent_treatment": r.agent_treatment,
-                "ground_truth": r.ground_truth,
+                "avoid_score": r.avoid_score,
+                "avoid_reason": r.avoid_reason,
+                "total_score": r.total_score,
+                "efficiency": {
+                    "total_steps": r.efficiency.total_steps,
+                    "exam_items": r.efficiency.exam_items,
+                },
+                "total_cost": r.total_cost if enable_cost else None,
             }
             for r in results
         ],
@@ -331,17 +411,32 @@ def generate_report(
         f.write(f"{'='*50}\n")
         f.write(f"评测结果\n")
         f.write(f"{'='*50}\n\n")
-        f.write(f"诊断准确率: {report['summary']['diagnosis_accuracy']*100:.1f}%\n")
-        f.write(f"诊断平均分: {avg_scores['diagnosis']:.2f}/10\n")
-        f.write(f"治疗平均分: {avg_scores['treatment']:.2f}/10\n")
-        f.write(f"综合平均分: {avg_scores['total']:.2f}/10\n")
-        f.write(f"禁忌违反率: {report['summary']['avoid_violation_rate']*100:.1f}%\n\n")
+        f.write(f"诊断准确率: {report['summary']['diagnosis']['accuracy']*100:.1f}%\n")
+        f.write(f"诊断平均分: {avg_scores['diagnosis']:.2f}/5\n")
+        f.write(f"治疗准确率: {report['summary']['treatment']['accuracy']*100:.1f}%\n")
+        f.write(f"治疗平均分: {avg_scores['treatment']:.2f}/5\n")
+        f.write(f"禁忌违反率: {report['summary']['safety']['violation_rate']*100:.1f}%\n")
+        f.write(f"安全平均分: {avg_scores['avoid']:.2f}/5\n\n")
+        f.write(f"效率统计:\n")
+        f.write(f"  平均轮次: {avg_steps:.1f}\n")
+        f.write(f"  平均检查项: {avg_exam_items:.1f}\n")
+        f.write(f"  平均生成token: {avg_tokens:.0f}\n")
+        f.write(f"  平均生成耗时: {avg_latency:.2f}s\n")
+        f.write(f"  平均生成速度: {avg_tokens_per_second:.1f} tokens/s\n\n")
+        f.write(f"综合平均分: {avg_scores['total']:.2f}/5\n\n")
+
+        if enable_cost and cost_stats:
+            f.write(f"费用评估:\n")
+            f.write(f"  平均费用: {cost_stats['avg_cost']:.2f}元\n")
+            f.write(f"  最高费用: {cost_stats['max_cost']:.2f}元\n")
+            f.write(f"  最低费用: {cost_stats['min_cost']:.2f}元\n")
+            f.write(f"  总费用: {cost_stats['total_cost']:.2f}元\n\n")
+
         f.write(f"分数分布:\n")
-        f.write(f"  优秀 (9-10): {score_distribution['excellent_9_10']}\n")
-        f.write(f"  良好 (7-9):  {score_distribution['good_7_9']}\n")
-        f.write(f"  中等 (5-7):  {score_distribution['medium_5_7']}\n")
-        f.write(f"  较差 (3-5):  {score_distribution['poor_3_5']}\n")
-        f.write(f"  失败 (0-3):  {score_distribution['fail_0_3']}\n")
+        f.write(f"  优秀 (4-5): {score_distribution['excellent_4_5']}\n")
+        f.write(f"  良好 (3-4):  {score_distribution['good_3_4']}\n")
+        f.write(f"  中等 (2-3):  {score_distribution['medium_2_3']}\n")
+        f.write(f"  较差 (1-2):  {score_distribution['poor_1_2']}\n")
 
     print(f"\n报告已保存:")
     print(f"  {report_file}")
@@ -377,8 +472,15 @@ def main():
     parser.add_argument(
         "--judge-model",
         type=str,
-        default="qwen3.5-plus",
-        help="评测器使用的 Judge 模型名称（独立于被评测模型）",
+        default="baichuan-m2",
+        help="评测器使用的 Judge 模型名称（默认百川M2）",
+    )
+
+    parser.add_argument(
+        "--judge-url",
+        type=str,
+        default="http://localhost:8200/v1",
+        help="Judge 模型的 API 地址（默认本地M2服务）",
     )
 
     parser.add_argument(
@@ -435,6 +537,12 @@ def main():
         help="不使用知识库",
     )
 
+    parser.add_argument(
+        "--enable-cost",
+        action="store_true",
+        help="启用费用评估",
+    )
+
     args = parser.parse_args()
 
     # 时间戳
@@ -473,8 +581,13 @@ def main():
     else:
         print("  知识库未加载")
 
-    judger = Judger(model_name=args.judge_model)
-    print(f"  评测器已初始化 (Judge: {args.judge_model})")
+    judger = Judger(
+        base_url=args.judge_url,
+        enable_cost=args.enable_cost,
+    )
+    print(f"  评测器已初始化 (M2: {args.judge_url})")
+    if args.enable_cost:
+        print(f"  费用评估已启用")
 
     # 运行评测
     print("\n[3/4] 开始评测...")
@@ -516,17 +629,23 @@ def main():
         output_dir=args.output,
         model_name=args.model,
         timestamp=timestamp,
+        enable_cost=args.enable_cost,
     )
 
     # 打印摘要
     print("\n" + "=" * 60)
     print("评测结果摘要")
     print("=" * 60)
-    print(f"诊断准确率: {report['summary']['diagnosis_accuracy']*100:.1f}%")
-    print(f"诊断平均分: {report['summary']['diagnosis_avg_score']:.2f}/10")
-    print(f"治疗平均分: {report['summary']['treatment_avg_score']:.2f}/10")
-    print(f"综合平均分: {report['summary']['total_avg_score']:.2f}/10")
-    print(f"禁忌违反率: {report['summary']['avoid_violation_rate']*100:.1f}%")
+    print(f"诊断准确率: {report['summary']['diagnosis']['accuracy']*100:.1f}%")
+    print(f"诊断平均分: {report['summary']['diagnosis']['avg_score']:.2f}/5")
+    print(f"治疗准确率: {report['summary']['treatment']['accuracy']*100:.1f}%")
+    print(f"治疗平均分: {report['summary']['treatment']['avg_score']:.2f}/5")
+    print(f"禁忌违反率: {report['summary']['safety']['violation_rate']*100:.1f}%")
+    print(f"安全平均分: {report['summary']['safety']['avg_score']:.2f}/5")
+    print(f"综合平均分: {report['summary']['total_avg_score']:.2f}/5")
+
+    if args.enable_cost and report.get('cost_stats'):
+        print(f"平均费用: {report['cost_stats']['avg_cost']:.2f}元")
     print("=" * 60)
 
 
