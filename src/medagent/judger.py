@@ -189,6 +189,7 @@ class Judger:
                 model_name=model_name,
                 base_url=base_url,
                 api_key=os.getenv("302_API_KEY"),  # 使用 302API key
+                max_tokens=32768,  # 32K 避免截断
             )
         else:
             self.llm_client = llm_client
@@ -229,6 +230,58 @@ class Judger:
                 summary_parts.append(f"步骤{i+1} [FINAL]: 最终诊断")
 
         return "\n".join(summary_parts)
+
+    def _parse_json_response(self, response: str) -> Optional[Dict]:
+        """
+        解析 JSON 响应，增加容错处理
+
+        Args:
+            response: 模型返回的字符串
+
+        Returns:
+            Dict: 解析后的 JSON，或 None 如果解析失败
+        """
+        if not response or not response.strip():
+            return None
+
+        # 尝试直接解析
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError:
+            pass
+
+        # 尝试从内容中提取 JSON（处理模型输出额外内容的情况）
+        import re
+        # 匹配 {...} 格式的 JSON
+        json_pattern = r'\{[^{}]*\}'
+        matches = re.findall(json_pattern, response)
+        for match in matches:
+            try:
+                return json.loads(match)
+            except json.JSONDecodeError:
+                continue
+
+        # 尝试匹配 ```json ... ``` 格式
+        json_block_pattern = r'```json\s*([\s\S]*?)\s*```'
+        block_matches = re.findall(json_block_pattern, response)
+        for match in block_matches:
+            try:
+                return json.loads(match)
+            except json.JSONDecodeError:
+                continue
+
+        # 尝试修复常见问题：截断的 JSON
+        # 如果 JSON 不完整，尝试补充结尾
+        if '{' in response and '}' not in response:
+            # 尝试找到最后一个完整的键值对
+            try:
+                # 简单补充结尾
+                fixed = response.rstrip() + '"}'
+                return json.loads(fixed)
+            except json.JSONDecodeError:
+                pass
+
+        return None
 
     def _analyze_efficiency(self, trajectory: List[Dict]) -> EfficiencyStats:
         """
@@ -330,29 +383,37 @@ class Judger:
             response = self.llm_client.call(
                 prompt=prompt,
                 temperature=0.1,
+                max_tokens=32768,  # 32K 确保完整的 JSON 输出
                 response_format={"type": "json_object"},
             )
 
-            scores = json.loads(response)
+            # 尝试解析 JSON
+            scores = self._parse_json_response(response)
 
-            # 诊断
-            result.diagnosis_correct = scores.get("diagnosis_correct", False)
-            result.diagnosis_score = float(scores.get("diagnosis_score", 0))
-            result.diagnosis_reason = scores.get("diagnosis_reason", "")
+            if scores is None:
+                print(f"[Judger Warning] JSON parse failed, using fallback")
+                result = self._fallback_evaluate(
+                    result, gt_diagnosis, gt_treatment, gt_avoid, agent_diagnosis, agent_treatment
+                )
+            else:
+                # 诊断
+                result.diagnosis_correct = scores.get("diagnosis_correct", False)
+                result.diagnosis_score = float(scores.get("diagnosis_score", 0))
+                result.diagnosis_reason = scores.get("diagnosis_reason", "")
 
-            # 治疗
-            result.treatment_correct = scores.get("treatment_correct", False)
-            result.treatment_score = float(scores.get("treatment_score", 0))
-            result.treatment_reason = scores.get("treatment_reason", "")
+                # 治疗
+                result.treatment_correct = scores.get("treatment_correct", False)
+                result.treatment_score = float(scores.get("treatment_score", 0))
+                result.treatment_reason = scores.get("treatment_reason", "")
 
-            # 安全
-            result.avoid_violated = scores.get("avoid_violated", False)
-            result.avoid_score = float(scores.get("avoid_score", 0))
-            result.avoid_reason = scores.get("avoid_reason", "")
-            result.avoid_violations = scores.get("avoid_violations", [])
+                # 安全
+                result.avoid_violated = scores.get("avoid_violated", False)
+                result.avoid_score = float(scores.get("avoid_score", 0))
+                result.avoid_reason = scores.get("avoid_reason", "")
+                result.avoid_violations = scores.get("avoid_violations", [])
 
-            # 综合分数 = (诊断 + 治疗 + 安全) / 3
-            result.total_score = (result.diagnosis_score + result.treatment_score + result.avoid_score) / 3
+                # 综合分数 = (诊断 + 治疗 + 安全) / 3
+                result.total_score = (result.diagnosis_score + result.treatment_score + result.avoid_score) / 3
 
         except Exception as e:
             print(f"[Judger Error] M2 scoring failed: {e}")

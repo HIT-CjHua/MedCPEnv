@@ -169,6 +169,7 @@ class CostEvaluator:
             model_name="Baichuan-M2",
             base_url=m2_url,
             api_key=os.getenv("302_API_KEY"),  # 使用 302API key
+            max_tokens=32768,  # 32K 避免截断
         )
         self.auto_save = auto_save
 
@@ -257,6 +258,7 @@ class CostEvaluator:
             response = self.m2_client.call(
                 prompt=prompt,
                 temperature=0.1,
+                max_tokens=32768,  # 32K 避免截断
                 response_format={"type": "json_object"},
             )
 
@@ -333,6 +335,7 @@ class CostEvaluator:
             response = self.m2_client.call(
                 prompt=prompt,
                 temperature=0.1,
+                max_tokens=32768,  # 32K 避免截断
                 response_format={"type": "json_object"},
             )
 

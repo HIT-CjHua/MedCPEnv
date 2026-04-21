@@ -284,7 +284,7 @@ class MedAgent:
         # Re: LLM 生成
         self._log("Thinking...")
         start_time = time.time()
-        response = self.llm_client.call(messages=self.state.messages, temperature=0.7)
+        response = self.llm_client.call(messages=self.state.messages, temperature=0.7, max_tokens=32768)
         latency = time.time() - start_time
 
         # 估算token数（中文约1.5字符/token，英文约4字符/token）

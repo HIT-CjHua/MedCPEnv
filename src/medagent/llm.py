@@ -127,7 +127,7 @@ class LLMClient:
         api_key: Optional[str] = None,
         model_name: str = "qwen3.5-plus",
         temperature: float = 0.7,
-        max_tokens: int = 2048,
+        max_tokens: int = 32768,  # 增大到32K，避免截断
         timeout: float = 120.0,
         # 可选：指定其他 API key 环境变量
         # 对于 302API: base_url="https://api.302.ai/v1", api_key_env="302_API_KEY"
