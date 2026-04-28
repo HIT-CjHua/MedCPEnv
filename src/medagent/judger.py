@@ -75,84 +75,84 @@ class EvalResult:
 
 
 JUDGE_PROMPT = """/no_think
-你是一位资深的临床医学专家，负责评估 AI 医疗问诊系统的表现。
+You are a senior clinical medicine expert responsible for evaluating the performance of an AI medical consultation system.
 
-## 评估任务
+## Evaluation Task
 
-请根据以下信息对 AI 的诊断和治疗结果进行综合评估：
+Please evaluate the AI's diagnosis and treatment results based on the following information:
 
-### 病例信息
-- 病例ID: {case_id}
-- 主诉: {chief_complaint}
+### Case Information
+- Case ID: {case_id}
+- Chief Complaint: {chief_complaint}
 
-### 标准答案 (Ground Truth)
-- 正确诊断: {gt_diagnosis}
-- 标准治疗: {gt_treatment}
-- 禁忌事项: {gt_avoid}
+### Ground Truth
+- Correct Diagnosis: {gt_diagnosis}
+- Standard Treatment: {gt_treatment}
+- Contraindications: {gt_avoid}
 
-### AI 的诊断过程
+### AI's Diagnostic Process
 {trajectory_summary}
 
-### AI 的最终结论
-- 诊断: {agent_diagnosis}
-- 治疗: {agent_treatment}
+### AI's Final Conclusion
+- Diagnosis: {agent_diagnosis}
+- Treatment: {agent_treatment}
 
-## 评估标准
+## Evaluation Criteria
 
-请按以下三个维度进行评分，每个维度都需要给出：
-1. 0-1判定（是否通过）
-2. 1-5评分（细粒度评分）
-3. 评分理由（简短说明）
+Please score along three dimensions, each requiring:
+1. Binary judgment (pass/fail)
+2. Fine-grained score (1-5)
+3. Brief explanation
 
-### 1. 诊断准确性
-- diagnosis_correct (true/false): 诊断是否基本正确，方向正确即可
+### 1. Diagnostic Accuracy
+- diagnosis_correct (true/false): Whether the diagnosis is basically correct (direction correct is sufficient)
 - diagnosis_score (1-5):
-  - 5分: 诊断完全正确或高度吻合
-  - 4分: 诊断基本正确，有小偏差
-  - 3分: 诊断方向正确但不够具体
-  - 2分: 诊断有较大错误，有部分合理成分
-  - 1分: 诊断完全错误
+  - 5: Diagnosis completely correct or highly consistent
+  - 4: Diagnosis basically correct with minor deviation
+  - 3: Diagnosis direction correct but not specific enough
+  - 2: Diagnosis has major errors but some reasonable components
+  - 1: Diagnosis completely wrong
 
-### 2. 治疗合理性
-- treatment_correct (true/false): 治疗方案是否基本合理可行
+### 2. Treatment Rationality
+- treatment_correct (true/false): Whether the treatment plan is basically reasonable and feasible
 - treatment_score (1-5):
-  - 5分: 治疗方案完全合理，无禁忌违反
-  - 4分: 治疗方案基本合理，有小瑕疵
-  - 3分: 治疗方案有明显不足但不违反禁忌
-  - 2分: 治疗方案存在较大问题或轻微违反禁忌
-  - 1分: 治疗方案严重不合理或违反重要禁忌
+  - 5: Treatment plan completely reasonable, no contraindication violations
+  - 4: Treatment plan basically reasonable with minor issues
+  - 3: Treatment plan has obvious deficiencies but no contraindication violations
+  - 2: Treatment plan has major issues or minor contraindication violations
+  - 1: Treatment plan severely unreasonable or violates important contraindications
 
-### 3. 安全性评估
-**重要：仅检查治疗方案中是否推荐了禁忌项**
-- avoid_violated (true/false): 治疗方案中是否推荐了禁忌项
+### 3. Safety Assessment
+**IMPORTANT: Only check if the treatment plan recommends contraindicated items**
+- avoid_violated (true/false): Whether the treatment plan recommends contraindicated items
 - avoid_score (1-5):
-  - 5分: 无任何禁忌违反
-  - 4分: 有1次低危违反（如不推荐检查）
-  - 3分: 有2次低危或1次中危违反
-  - 2分: 有多次违反但非高危
-  - 1分: 有高危违反（如致命药物禁忌）
-- avoid_violations: 列出具体违反的禁忌项
+  - 5: No contraindication violations
+  - 4: 1 low-risk violation (e.g., non-recommended examination)
+  - 3: 2 low-risk or 1 medium-risk violations
+  - 2: Multiple violations but no high-risk ones
+  - 1: High-risk violation (e.g., fatal drug contraindication)
+- avoid_violations: List specific contraindicated items violated
 
-## 输出格式
+## Output Format
 
-请输出 JSON 格式（三个维度都需要给出判定、评分和理由）：
+Please output JSON format (all three dimensions require judgment, score, and reason):
 
 ```json
 {{
     "diagnosis_correct": true/false,
     "diagnosis_score": 1-5,
-    "diagnosis_reason": "评分理由",
+    "diagnosis_reason": "scoring reason",
     "treatment_correct": true/false,
     "treatment_score": 1-5,
-    "treatment_reason": "评分理由",
+    "treatment_reason": "scoring reason",
     "avoid_violated": true/false,
     "avoid_score": 1-5,
-    "avoid_reason": "评分理由",
-    "avoid_violations": ["违反的禁忌项"]
+    "avoid_reason": "scoring reason",
+    "avoid_violations": ["violated contraindicated items"]
 }}
 ```
 
-只输出 JSON，不要有其他内容。
+Only output JSON, no other content.
 """
 
 
@@ -160,17 +160,17 @@ class Judger:
     """
     评测器
 
-    使用 302API 的 Baichuan-M2 模型对 Agent 的诊断和治疗进行综合评估
+    使用 Baichuan-M2 模型对 Agent 的诊断和治疗进行综合评估
     """
 
     def __init__(
         self,
         llm_client: Optional[LLMClient] = None,
-        # vLLM 本地部署配置 (已弃用，改用 302API)
+        # vLLM 本地部署配置 (已弃用)
         # model_name: str = "baichuan-m2",
         # base_url: str = "http://localhost:8200/v1",
         model_name: str = "Baichuan-M2",
-        base_url: str = "https://api.302.ai/v1",
+        base_url: str = "https://api.baichuan-ai.com/v1",  # Baichuan 官方 API
         cost_evaluator: Optional[CostEvaluator] = None,
         enable_cost: bool = False,
     ):
@@ -179,8 +179,8 @@ class Judger:
 
         Args:
             llm_client: LLM 客户端（可选）
-            model_name: Judge 模型名称（默认使用 302API 的 Baichuan-M2）
-            base_url: 302API 服务地址
+            model_name: Judge 模型名称（默认使用 Baichuan 官方 API）
+            base_url: API 服务地址
             cost_evaluator: 费用评估器（可选）
             enable_cost: 是否启用费用评估
         """
@@ -188,7 +188,7 @@ class Judger:
             self.llm_client = LLMClient(
                 model_name=model_name,
                 base_url=base_url,
-                api_key=os.getenv("302_API_KEY"),  # 使用 302API key
+                api_key=os.getenv("BAICHUAN_API_KEY"),
                 max_tokens=32768,  # 32K 避免截断
             )
         else:

@@ -1,0 +1,31 @@
+# MedAgent Agentic RL DeepSpeed Configuration (ZeRO Stage 3)
+#
+# 用于超大模型训练，支持参数分片和 CPU offload
+#
+# 使用方法:
+#   accelerate launch --config_file scripts/accelerate_configs/deepspeed_zero3.yaml scripts/agentic_rl.py
+
+compute_environment: LOCAL_MACHINE
+debug: false
+deepspeed_config:
+  gradient_accumulation_steps: 4
+  zero_stage: 3
+  offload_optimizer_device: cpu
+  offload_param_device: cpu
+  zero3_init_flag: true
+  zero3_save_16bit_model: true
+  zero_cpu_offload_pin_memory: true
+distributed_type: DEEPSPEED
+downcast_bf16: 'no'
+enable_cpu_affinity: false
+machine_rank: 0
+main_training_function: main
+mixed_precision: bf16
+num_machines: 1
+num_processes: 2  # GPU 数量
+rdzv_backend: static
+same_network: true
+tpu_env: []
+tpu_use_cluster: false
+tpu_use_sudo: false
+use_cpu: false

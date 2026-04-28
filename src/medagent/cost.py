@@ -17,9 +17,36 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 import json
 import os
+import re
+import time
 from pathlib import Path
 
 from .llm import LLMClient
+
+
+def _parse_json_response(response: str) -> Optional[Dict]:
+    """解析 JSON 响应，支持 markdown code block 等格式"""
+    if not response or not response.strip():
+        return None
+    try:
+        return json.loads(response)
+    except json.JSONDecodeError:
+        pass
+    # 尝试匹配 ```json ... ``` 格式
+    json_block = re.findall(r'```(?:json)?\s*([\s\S]*?)\s*```', response)
+    for match in json_block:
+        try:
+            return json.loads(match)
+        except json.JSONDecodeError:
+            continue
+    # 尝试匹配最外层 { ... }
+    json_obj = re.findall(r'\{[\s\S]*\}', response)
+    for match in json_obj:
+        try:
+            return json.loads(match)
+        except json.JSONDecodeError:
+            continue
+    return None
 
 
 @dataclass
@@ -81,24 +108,24 @@ EXTRACT_PROMPT = """/no_think
 请输出 JSON 格式，包含以下字段：
 
 ```json
-{
+{{
     "services": [
-        {
+        {{
             "name": "<服务名称>",
             "specification": "<规格/说明，如检查部位>",
             "unit": "<计价单位，如次/项>",
             "quantity": <数量，默认1>
-        }
+        }}
     ],
     "medicines": [
-        {
+        {{
             "name": "<药品名称>",
             "specification": "<规格，如剂量>",
             "unit": "<单位，如盒/支>",
             "quantity": <数量>
-        }
+        }}
     ]
-}
+}}
 ```
 
 注意：
@@ -127,14 +154,14 @@ GENERATE_PRICE_PROMPT = """/no_think
 请输出 JSON 格式：
 
 ```json
-{
+{{
     "item_type": "{item_type}",
     "item_name": "{item_name}",
     "specification": "<规格>",
     "unit": "<单位>",
     "price": <价格，单位：元>,
     "price_reason": "<定价理由简述>"
-}
+}}
 ```
 
 只输出 JSON，不要有其他内容。
@@ -145,15 +172,14 @@ class CostEvaluator:
     """
     费用评估器
 
-    使用 302API 的 Baichuan-M2 模型提取诊疗项目，通过价格清单匹配或生成的方式进行费用估算
+    使用 Baichuan 官方 API 提取诊疗项目，通过价格清单匹配或生成的方式进行费用估算
     """
 
     def __init__(
         self,
         price_list_path: str = "data/cost_list/cost_reference.jsonl",
-        # vLLM 本地部署配置 (已弃用，改用 302API)
-        # m2_url: str = "http://localhost:8200/v1",
-        m2_url: str = "https://api.302.ai/v1",
+        m2_url: str = "https://api.baichuan-ai.com/v1",  # Baichuan 官方 API
+        m2_model: str = "Baichuan-M2",
         auto_save: bool = True,
     ):
         """
@@ -161,14 +187,16 @@ class CostEvaluator:
 
         Args:
             price_list_path: 价格清单路径
-            m2_url: 302API 模型服务地址
+            m2_url: Baichuan 官方 API 地址
+            m2_model: Baichuan 模型名称
             auto_save: 是否自动保存新生成的价格到清单
         """
         self.price_list_path = Path(price_list_path)
+        self.m2_model = m2_model
         self.m2_client = LLMClient(
-            model_name="Baichuan-M2",
+            model_name=m2_model,
             base_url=m2_url,
-            api_key=os.getenv("302_API_KEY"),  # 使用 302API key
+            api_key=os.getenv("BAICHUAN_API_KEY"),
             max_tokens=32768,  # 32K 避免截断
         )
         self.auto_save = auto_save
@@ -255,14 +283,29 @@ class CostEvaluator:
         )
 
         try:
-            response = self.m2_client.call(
-                prompt=prompt,
-                temperature=0.1,
-                max_tokens=32768,  # 32K 避免截断
-                response_format={"type": "json_object"},
-            )
+            # 添加重试逻辑处理限流
+            max_retries = 3
+            for retry in range(max_retries):
+                try:
+                    response = self.m2_client.call(
+                        prompt=prompt,
+                        temperature=0.1,
+                        max_tokens=32768,  # 32K 避免截断
+                        response_format={"type": "json_object"},
+                    )
+                    break  # 成功则退出重试
+                except Exception as e:
+                    if "429" in str(e) or "rate" in str(e).lower():
+                        if retry < max_retries - 1:
+                            wait_time = 30 * (retry + 1)  # 30s, 60s, 90s
+                            print(f"[Cost] 限流，等待 {wait_time}s 后重试...")
+                            time.sleep(wait_time)
+                            continue
+                    raise  # 非429错误或最后一次重试失败则抛出
 
-            result = json.loads(response)
+            result = _parse_json_response(response)
+            if result is None:
+                raise ValueError(f"Failed to parse JSON from response: {response[:200]}")
             services = result.get("services", [])
             medicines = result.get("medicines", [])
 
@@ -339,7 +382,9 @@ class CostEvaluator:
                 response_format={"type": "json_object"},
             )
 
-            result = json.loads(response)
+            result = _parse_json_response(response)
+            if result is None:
+                raise ValueError(f"Failed to parse JSON from response: {response[:200]}")
 
             # 构建价格记录
             price_record = {
@@ -512,7 +557,7 @@ class CostEvaluator:
         if result.service_items:
             lines.append(f"[医疗服务]")
             for item in result.service_items:
-                source_tag = "✓" if item.source == "matched" else "⚡" if item.source == "generated" else "✗"
+                source_tag = "[M]" if item.source == "matched" else "[G]" if item.source == "generated" else "[F]"
                 lines.append(f"  {source_tag} {item.item_name}: {item.price}元 × {item.quantity} = {item.price * item.quantity}元")
             lines.append(f"  小计: {result.service_cost}元")
             lines.append(f"")
@@ -521,7 +566,7 @@ class CostEvaluator:
         if result.medicine_items:
             lines.append(f"[药品]")
             for item in result.medicine_items:
-                source_tag = "✓" if item.source == "matched" else "⚡" if item.source == "generated" else "✗"
+                source_tag = "[M]" if item.source == "matched" else "[G]" if item.source == "generated" else "[F]"
                 lines.append(f"  {source_tag} {item.item_name}: {item.price}元 × {item.quantity} = {item.price * item.quantity}元")
             lines.append(f"  小计: {result.medicine_cost}元")
             lines.append(f"")

@@ -1,0 +1,38 @@
+# MedAgent Agentic RL Multi-GPU Accelerate Configuration
+#
+# 用于多卡并行训练 GRPO
+#
+# 使用方法:
+#   accelerate launch --config_file scripts/accelerate_configs/multi_gpu.yaml scripts/agentic_rl.py
+#
+# 或使用 launch 脚本:
+#   bash scripts/train_multi_gpu.sh
+
+compute_environment: LOCAL_MACHINE
+debug: false
+distributed_type: MULTI_GPU
+downcast_bf16: 'no'
+enable_cpu_affinity: false
+machine_rank: 0
+main_training_function: main
+mixed_precision: bf16
+num_machines: 1
+num_processes: 2  # GPU 数量，根据实际硬件调整
+rdzv_backend: static
+same_network: true
+tpu_env: []
+tpu_use_cluster: false
+tpu_use_sudo: false
+use_cpu: false
+
+# FSDP 配置（可选，用于大模型显存优化）
+# fsdp_config:
+#   fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP
+#   fsdp_backward_prefetch_policy: BACKWARD_PRE
+#   fsdp_cpu_ram_efficient_loading: false
+#   fsdp_forward_prefetch_policy: NO_PRE
+#   fsdp_offload_params: false
+#   fsdp_sharding_strategy: 1
+#   fsdp_state_dict_type: FULL_STATE_DICT
+#   fsdp_sync_module_states: true
+#   fsdp_use_orig_params: true
