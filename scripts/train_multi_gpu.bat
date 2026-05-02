@@ -8,7 +8,7 @@ REM   scripts\train_multi_gpu.bat [OPTIONS]
 REM
 REM 示例:
 REM   scripts\train_multi_gpu.bat --model Qwen/Qwen2.5-3B --max-steps 1000
-REM   scripts\train_multi_gpu.bat --config deepspeed_zero2 --model Qwen/Qwen2.5-7B
+REM   scripts\train_multi_gpu.bat --config deepspeed_zero2 --model Qwen/Qwen2.5-7B --disable-kb
 
 setlocal enabledelayedexpansion
 
@@ -19,6 +19,7 @@ set MODEL=Qwen/Qwen2.5-3B
 set MAX_STEPS=500
 set BATCH_SIZE=4
 set DATA=data/train.jsonl
+set DISABLE_KB=0
 
 REM 解析命令行参数
 :parse_args
@@ -59,6 +60,11 @@ if "%~1"=="--data" (
     shift
     goto :parse_args
 )
+if "%~1"=="--disable-kb" (
+    set DISABLE_KB=1
+    shift
+    goto :parse_args
+)
 if "%~1"=="--help" (
     echo Usage: scripts\train_multi_gpu.bat [OPTIONS]
     echo.
@@ -69,6 +75,7 @@ if "%~1"=="--help" (
     echo   --max-steps     Maximum training steps
     echo   --batch-size    Per-device batch size
     echo   --data          Training data path
+    echo   --disable-kb    Disable knowledge base (use simulated responses)
     echo   --help          Show this help message
     exit /b 0
 )
@@ -94,11 +101,18 @@ echo Model:      %MODEL%
 echo Max Steps:  %MAX_STEPS%
 echo Batch Size: %BATCH_SIZE% (per device)
 echo Data:       %DATA%
+echo Disable KB: %DISABLE_KB%
 echo ============================================================
+
+REM 构建额外参数
+set EXTRA_ARGS=
+if %DISABLE_KB%==1 (
+    set EXTRA_ARGS=--disable-kb
+)
 
 REM 启动训练
 accelerate launch ^
-    --config_file "%CONFIG_FILE" ^
+    --config_file "%CONFIG_FILE%" ^
     --num_processes %NUM_GPUS% ^
     scripts\agentic_rl.py ^
     --model "%MODEL%" ^
@@ -109,7 +123,8 @@ accelerate launch ^
     --lora-r 16 ^
     --lora-alpha 32 ^
     --gradient-accumulation-steps 4 ^
-    --output-dir "output\agentic_rl_multi_gpu"
+    --output-dir "output\agentic_rl_multi_gpu" ^
+    %EXTRA_ARGS%
 
 echo ============================================================
 echo Training completed!

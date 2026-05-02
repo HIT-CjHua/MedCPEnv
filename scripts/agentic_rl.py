@@ -28,6 +28,7 @@ import os
 import sys
 import re
 import json
+import time
 import argparse
 import textwrap
 from pathlib import Path
@@ -41,7 +42,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.schema import MedicalCase, MedicalItem, GroundTruth
 from src.medagent.tool import AskTool, ExamTool, KnowledgeTool
-from src.medagent.knowledge_base import KnowledgeBase
+from src.medagent.knowledge_tool_v2 import KeywordKnowledgeBase
 from src.medagent.judger import Judger
 
 
@@ -59,25 +60,22 @@ class RewardConfig:
     核心奖励使用 Judger (Baichuan-M2 + ground_truth) 进行评分:
     - diagnosis_score (1-5): 诊断准确性
     - treatment_score (1-5): 治疗合理性
-    - avoid_score (1-5): 安全性（禁忌违反程度）
+    - 安全分已去除（区分度极低，97%+样本为5分，对梯度无贡献）
     """
     # Judger 评分权重（核心奖励）
     enable_judger: bool = True
     diagnosis_weight: float = 1.0  # 诊断得分权重
-    treatment_weight: float = 0.8  # 治疗得分权重
-    safety_weight: float = 1.2     # 安全得分权重（惩罚禁忌违反）
+    treatment_weight: float = 1.0  # 治疗得分权重（与诊断等权）
 
     # 工具效率奖励
     enable_tool_efficiency: bool = True
-    tool_usage_reward: float = 0.3     # 有 ASK/EXAM 调用的奖励
-    efficiency_bonus_high: float = 0.5  # ≤6轮的高效奖励
-    efficiency_bonus_medium: float = 0.2  # ≤10轮的中等奖励
-    over_steps_penalty: float = -0.5    # >15轮的惩罚
-    no_tool_penalty: float = -0.3       # 无工具调用的惩罚
+    min_tool_calls: int = 2            # 最低要求: ASK + EXAM
+    tool_base_reward: float = 0.5      # 满足最低要求的基准奖励
+    efficiency_scale: float = 1.0      # 调用数越少奖励越大，缩放因子
 
     # 成本奖励
     enable_cost_reward: bool = False
-    cost_reward: float = 1.0  # 同组最低 cost 的奖励
+    cost_reward_scale: float = 1.0  # 组内排序奖励的缩放因子
 
     # Judger 配置
     judger_model: str = "Baichuan-M2"
@@ -88,18 +86,19 @@ class RewardConfig:
 # 知识库初始化（全局单例）
 # -----------------------------------------------------------------------------
 
-_knowledge_base: Optional[KnowledgeBase] = None
+_knowledge_base: Optional[KeywordKnowledgeBase] = None
 
 
-def get_knowledge_base(kb_path: str = "data/knowledge_db") -> Optional[KnowledgeBase]:
+def get_knowledge_base(kb_path: str = "data/knowledge_dataset/ResponseMed.json") -> Optional[KeywordKnowledgeBase]:
     """获取或初始化知识库实例"""
     global _knowledge_base
     if _knowledge_base is None:
         kb_full_path = PROJECT_ROOT / kb_path
         if kb_full_path.exists():
             try:
-                _knowledge_base = KnowledgeBase().load(str(kb_full_path))
-                print(f"[KnowledgeBase] 加载成功: {kb_full_path}")
+                _knowledge_base = KeywordKnowledgeBase()
+                _knowledge_base.load(str(kb_full_path))
+                print(f"[KnowledgeBase] 加载成功: {kb_full_path} ({len(_knowledge_base.records)} 条记录)")
             except Exception as e:
                 print(f"[KnowledgeBase] 加载失败: {e}")
         else:
@@ -212,29 +211,30 @@ def tool_exam(keywords: str) -> str:
     return f"[检查结果] 关于 {', '.join(kw_list)} 的检查数据已获取。"
 
 
-def tool_knowledge(query: str) -> str:
+def tool_knowledge(keywords: str) -> str:
     """
     知识库查询工具，用于检索医学知识。
-    
-    查询医学知识库获取诊断标准、治疗指南、药物信息等。
-    知识库包含权威医学文献和临床指南摘要。
-    
+
+    通过关键词匹配查询医学知识库，获取诊断标准、治疗指南、药物信息等。
+    知识库包含 ResponseMed.json 中的 37 万+条 QA 数据。
+
     Args:
-        query: 查询内容，应具体明确。
-               例如: "急性阑尾炎的诊断标准"
-    
+        keywords: 查询关键词，多个关键词用逗号分隔。
+                  例如: "appendicitis, diagnostic criteria, treatment"
+
     Returns:
-        str: 相关医学知识的摘要。
+        str: 相关医学知识摘要，包含匹配的 QA 记录。
     """
-    if not query or not query.strip():
-        return "请提供查询内容。"
-    
+    kw_list = [kw.strip() for kw in keywords.split(",") if kw.strip()]
+    if not kw_list:
+        return "请提供查询关键词。"
+
     # 尝试使用真实知识库
     kb = get_knowledge_base()
     if kb is not None:
         try:
-            tool = KnowledgeTool(knowledge_base=kb, top_k=10, rerank_top_n=3, max_length=500)
-            return tool.execute(query=query.strip())
+            tool = KnowledgeTool(knowledge_base=kb, top_k=3)
+            return tool.execute(keywords=kw_list)
         except Exception as e:
             print(f"[KnowledgeTool] 查询失败: {e}")
     
@@ -404,20 +404,18 @@ def judger_reward(
     """
     使用 Judger (Baichuan-M2 + ground_truth) 进行综合评分
 
-    对诊断、治疗和安全性三个维度进行评估:
+    对诊断和治疗两个维度进行评估（安全分已去除）:
     - diagnosis_score (1-5): 诊断准确性
     - treatment_score (1-5): 治疗合理性
-    - avoid_score (1-5): 安全性（禁忌违反程度）
 
     综合奖励 = diagnosis_weight * diagnosis_score +
-               treatment_weight * treatment_score +
-               safety_weight * (5 - avoid_score)  # 安全反向计算，违反越多惩罚越大
+               treatment_weight * treatment_score
 
     Args:
         completions: 模型生成的完成序列（每个样本是一个消息列表）
         ground_truth_diagnosis: 标准诊断列表
         ground_truth_treatment: 标准治疗列表
-        ground_truth_avoid: 禁忌项目列表
+        ground_truth_avoid: 禁忌项目列表（保留用于兼容性，不参与奖励）
         chief_complaint: 主诉列表
         case_id: 病例ID列表
         reward_config: 奖励配置
@@ -460,17 +458,9 @@ def judger_reward(
                     agent_treatment=agent_treatment,
                 )
 
-                # 计算综合奖励
-                # diagnosis_score: 1-5, 越高越好
+                # 计算综合奖励（仅诊断+治疗，不含安全分）
                 reward += config.diagnosis_weight * eval_result.diagnosis_score
-
-                # treatment_score: 1-5, 越高越好
                 reward += config.treatment_weight * eval_result.treatment_score
-
-                # avoid_score: 1-5, 越高越安全（5=无违反，1=高危违反）
-                # 反向计算: safety_reward = weight * (5 - avoid_score)
-                # 这样违反越多惩罚越大（avoid_score=1时惩罚最大）
-                reward += config.safety_weight * eval_result.avoid_score
 
             except Exception as e:
                 # Judger 调用失败，使用 fallback 简单匹配
@@ -595,7 +585,7 @@ def _fallback_reward(
     """
     当 Judger 调用失败时的备选奖励计算
 
-    使用简单的字符串匹配
+    使用简单的字符串匹配（仅诊断+治疗，不含安全分）
     """
     reward = 0.0
 
@@ -617,17 +607,6 @@ def _fallback_reward(
         else:
             reward += config.treatment_weight * 1.0
 
-    # 禁忌检查
-    if gt_avoid:
-        avoid_score = 5.0  # 默认安全
-        for avoid_item in gt_avoid:
-            if isinstance(avoid_item, str) and avoid_item.lower() in agent_treatment.lower():
-                avoid_score -= 1.0  # 每次违反扣1分
-        avoid_score = max(1.0, avoid_score)
-        reward += config.safety_weight * avoid_score
-    else:
-        reward += config.safety_weight * 5.0  # 无禁忌要求，满分
-
     return reward
 
 
@@ -638,96 +617,131 @@ def tool_efficiency_reward(
 ) -> List[float]:
     """
     工具使用效率奖励
-    
-    奖励合理使用工具：
-    - 有 ASK/EXAM 调用: +奖励（鼓励使用）
-    - 轮次 ≤ 6: 高效奖励
-    - 轮次 ≤ 10: 中等效率奖励
-    - 轮次 > 15: 惩罚（过度检查）
-    - 无工具调用: 惩罚（未充分收集信息）
-    
+
+    规则（基于 Python 实现）:
+    1. 至少要有 ASK + EXAM 调用（>=2 次不同的工具类型）
+    2. 满足最低要求的基础上，调用总数越低奖励越大
+    3. 无工具调用或只有单一工具类型：给负奖励
+
     Args:
         completions: 模型生成的完成序列
         reward_config: 奖励配置
-    
+
     Returns:
         List[float]: 每个样本的奖励值
     """
     config = reward_config or RewardConfig()
     rewards = []
-    
+
     for completion in completions:
         reward = 0.0
-        tool_calls = 0
-        ask_exam_calls = 0
-        
-        # 统计工具调用
+        tool_types_used = set()
+        total_tool_calls = 0
+
         for turn in completion:
             if turn.get("role") == "assistant" and turn.get("tool_calls"):
                 for call in turn["tool_calls"]:
-                    tool_calls += 1
+                    total_tool_calls += 1
                     name = call.get("function", {}).get("name", "")
-                    if name in ["tool_ask", "tool_exam"]:
-                        ask_exam_calls += 1
-        
-        # 有 ASK/EXAM 调用的奖励
-        if ask_exam_calls > 0:
-            reward += config.tool_usage_reward
-        
-        # 轮次效率奖励
-        total_turns = len([t for t in completion if t.get("role") == "assistant"])
-        if total_turns <= 6:
-            reward += config.efficiency_bonus_high
-        elif total_turns <= 10:
-            reward += config.efficiency_bonus_medium
-        elif total_turns > 15:
-            reward += config.over_steps_penalty
-        
-        # 无工具调用的惩罚
-        if tool_calls == 0:
-            reward += config.no_tool_penalty
-        
+                    if name == "tool_ask":
+                        tool_types_used.add("ASK")
+                    elif name == "tool_exam":
+                        tool_types_used.add("EXAM")
+                    elif name == "tool_knowledge":
+                        tool_types_used.add("KNOWLEDGE")
+
+        has_ask_exam = ("ASK" in tool_types_used) and ("EXAM" in tool_types_used)
+
+        if has_ask_exam and total_tool_calls >= config.min_tool_calls:
+            # 满足最低要求：基准奖励 + 调用数越少的额外奖励
+            # 额外奖励 = scale / (total_tool_calls + 1)
+            reward = config.tool_base_reward + config.efficiency_scale / (total_tool_calls + 1)
+        else:
+            # 未满足最低要求：负奖励
+            reward = -config.tool_base_reward
+
         rewards.append(reward)
-    
+
     return rewards
 
 
 def cost_reward(
     completions: List[List[Dict]],
-    cost: Optional[List[float]] = None,
     reward_config: Optional[RewardConfig] = None,
     **kwargs
 ) -> List[float]:
     """
-    成本奖励（可选）
-    
-    对于同组轨迹，奖励总 cost 更低的样本。
-    需要数据中包含 cost 字段（预估医疗费用）。
-    
+    成本奖励（组内排序）
+
+    对于同组（batch）样本：
+    1. 从 completion 提取轨迹
+    2. 使用 CostEvaluator 计算每条轨迹的费用
+    3. 组内排序：cost 越低排名越靠前
+    4. 奖励 = scale * (1 - rank / (N-1))，最低 cost 得满分，最高得 0
+
     Args:
         completions: 模型生成的完成序列
-        cost: 每个样本的预估成本列表
         reward_config: 奖励配置
-    
+
     Returns:
         List[float]: 每个样本的奖励值
     """
     config = reward_config or RewardConfig()
-    rewards = []
-    
-    if cost is None or len(cost) == 0:
-        return [0.0] * len(completions)
-    
-    # 找到最低成本
-    min_cost = min(cost)
-    
-    for c in cost:
-        if c == min_cost:
-            rewards.append(config.cost_reward)
+    n = len(completions)
+
+    if n <= 1:
+        return [0.0] * n
+
+    # 计算每条轨迹的 cost
+    costs = []
+    for completion in completions:
+        trajectory = _extract_trajectory_from_completion(completion)
+        if trajectory:
+            # 从轨迹中估算 cost（基于规则：检查项和问诊项计数）
+            cost = _estimate_trajectory_cost(trajectory)
         else:
-            rewards.append(0.0)
-    
+            cost = float("inf")  # 无轨迹的给最高 cost
+        costs.append(cost)
+
+    # 组内排序，计算排名奖励
+    # rank 0 = 最低 cost，rank N-1 = 最高 cost
+    sorted_indices = sorted(range(n), key=lambda i: costs[i])
+    ranks = [0] * n
+    for rank, idx in enumerate(sorted_indices):
+        ranks[idx] = rank
+
+    # 奖励归一化到 [0, scale]
+    max_rank = n - 1
+    rewards = [config.cost_reward_scale * (1.0 - r / max_rank) for r in ranks]
+
     return rewards
+
+
+def _estimate_trajectory_cost(trajectory: List[Dict]) -> float:
+    """
+    基于轨迹估算费用（规则实现，不调用 API）
+
+    估算策略：
+    - 每个 EXAM 项目: 50 元（平均检查费用）
+    - 每个 ASK 项目: 10 元（问诊成本，时间等）
+    - 每个 KNOWLEDGE 查询: 5 元
+
+    这只是一个 proxy cost，用于训练时的组内排序。
+    精确的费用评估需要在评测阶段用 CostEvaluator + Baichuan API。
+    """
+    cost = 0.0
+    for step in trajectory:
+        action = step.get("parsed", {}).get("action", "")
+        keywords = step.get("parsed", {}).get("keywords", [])
+
+        if action == "EXAM":
+            cost += len(keywords) * 50.0
+        elif action == "ASK":
+            cost += len(keywords) * 10.0
+        elif action == "KNOWLEDGE":
+            cost += 5.0
+
+    return cost
 
 
 def build_reward_functions(reward_config: RewardConfig) -> List:
@@ -754,7 +768,7 @@ def build_reward_functions(reward_config: RewardConfig) -> List:
     if reward_config.enable_cost_reward:
         reward_funcs.append(cost_reward)
 
-    print(f"[Reward] 已启用 {len(reward_funcs)} 个奖励函数: judger={reward_config.enable_judger}, efficiency={reward_config.enable_tool_efficiency}, cost={reward_config.enable_cost_reward}")
+    print(f"[Reward] 已启用 {len(reward_funcs)} 个奖励函数: judger={reward_config.enable_judger}(诊断+治疗), efficiency={reward_config.enable_tool_efficiency}, cost={reward_config.enable_cost_reward}")
     return reward_funcs
 
 
@@ -858,6 +872,11 @@ def main():
         default="data/knowledge_db",
         help="知识库路径",
     )
+    parser.add_argument(
+        "--disable-kb",
+        action="store_true",
+        help="禁用知识库（使用模拟响应，适用于 RL 训练）",
+    )
     
     # 奖励配置参数
     parser.add_argument(
@@ -887,6 +906,19 @@ def main():
         default="https://api.baichuan-ai.com/v1",
         help="Judger API 地址",
     )
+
+    # SwanLab 日志参数
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        help="SwanLab run 名称（不指定则自动生成）",
+    )
+    parser.add_argument(
+        "--use-swanlab",
+        action="store_true",
+        help="是否使用 SwanLab 记录训练日志",
+    )
     
     args = parser.parse_args()
     
@@ -914,7 +946,12 @@ def main():
     
     # 初始化知识库
     print("\n[0/4] 初始化知识库...")
-    get_knowledge_base(args.kb_path)
+    if not args.disable_kb:
+        kb = get_knowledge_base(args.kb_path)
+        if kb is None:
+            print("  知识库未加载，将使用模拟响应")
+    else:
+        print("  知识库已禁用，使用模拟响应进行 RL 训练")
     
     # 加载数据
     print("\n[1/4] 加载训练数据...")
@@ -935,9 +972,37 @@ def main():
         get_judger(reward_config)
 
     reward_funcs = build_reward_functions(reward_config)
-    
+
     # 配置 GRPO
     print("\n[3/4] 配置 GRPO...")
+
+    # SwanLab 配置
+    use_swanlab = args.use_swanlab
+    if use_swanlab:
+        # 从环境变量获取 project name，默认 MedAgentEnv
+        swanlab_project_name = os.getenv("SWANLAB_PROJECT_NAME", "MedAgentEnv")
+
+        # 生成 run_name（如果未手动指定）
+        if args.run_name:
+            run_name = args.run_name
+        else:
+            # 自动生成：模型名+时间戳
+            model_short_name = args.model.split("/")[-1]  # 如 Qwen2.5-3B
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            run_name = f"{model_short_name}_{timestamp}"
+
+        print(f"  SwanLab Project: {swanlab_project_name}")
+        print(f"  SwanLab Run Name: {run_name}")
+
+        # 设置环境变量供 SwanLab 使用
+        os.environ["SWANLAB_PROJECT_NAME"] = swanlab_project_name
+        os.environ["SWANLAB_RUN_NAME"] = run_name
+
+        report_to = "swanlab"
+    else:
+        report_to = "none"
+        run_name = None
+
     grpo_config = GRPOConfig(
         output_dir=args.output_dir,
         max_steps=args.max_steps,
@@ -946,18 +1011,21 @@ def main():
         learning_rate=args.learning_rate,
         max_completion_length=args.max_completion_length,
         chat_template_kwargs={"enable_thinking": False},
-        
+
         # vLLM 配置
         use_vllm=args.use_vllm,
         vllm_mode="colocate" if args.use_vllm else None,
         vllm_enable_sleep_mode=False,
-        
+
         # 日志与保存
         save_steps=50,
         logging_steps=10,
         log_completions=True,
-        report_to="none",
-        
+        report_to=report_to,
+
+        # SwanLab run name (通过 run_name 参数)
+        run_name=run_name,
+
         # 显存优化
         bf16=True,
         tf32=True,

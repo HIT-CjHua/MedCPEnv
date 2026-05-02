@@ -19,6 +19,7 @@ MODEL="Qwen/Qwen2.5-3B"
 MAX_STEPS=500
 BATCH_SIZE=4
 DATA="data/train.jsonl"
+DISABLE_KB=false
 
 # 解析命令行参数
 while [[ $# -gt 0 ]]; do
@@ -47,6 +48,10 @@ while [[ $# -gt 0 ]]; do
             DATA="$2"
             shift 2
             ;;
+        --disable-kb)
+            DISABLE_KB=true
+            shift
+            ;;
         --help)
             echo "Usage: bash scripts/train_multi_gpu.sh [OPTIONS]"
             echo ""
@@ -57,6 +62,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --max-steps     Maximum training steps (default: 500)"
             echo "  --batch-size    Per-device batch size (default: 4)"
             echo "  --data          Training data path (default: data/train.jsonl)"
+            echo "  --disable-kb    Disable knowledge base (use simulated responses)"
             echo "  --help          Show this help message"
             exit 0
             ;;
@@ -88,7 +94,14 @@ echo "Model:      $MODEL"
 echo "Max Steps:  $MAX_STEPS"
 echo "Batch Size: $BATCH_SIZE (per device)"
 echo "Data:       $DATA"
+echo "Disable KB: $DISABLE_KB"
 echo "============================================================"
+
+# 构建额外参数
+EXTRA_ARGS=""
+if [[ "$DISABLE_KB" == "true" ]]; then
+    EXTRA_ARGS="--disable-kb"
+fi
 
 # 启动训练
 accelerate launch \
@@ -102,7 +115,8 @@ accelerate launch \
     --lora-r 16 \
     --lora-alpha 32 \
     --gradient-accumulation-steps 4 \
-    --output-dir "output/agentic_rl_multi_gpu"
+    --output-dir "output/agentic_rl_multi_gpu" \
+    $EXTRA_ARGS
 
 echo "============================================================"
 echo "Training completed!"

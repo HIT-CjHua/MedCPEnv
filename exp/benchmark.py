@@ -15,11 +15,23 @@ Usage:
     # 指定模型评测
     python exp/benchmark.py --models qwen3.5-plus,gpt-5.4,deepseek-v3.2 --n 100
 
+    # 分批评测 (先测500条，再测后500条)
+    python exp/benchmark.py --n 500 --start 0
+    python exp/benchmark.py --n 500 --start 500
+
+    # 重跑失败的病例 (断点续跑)
+    python exp/benchmark.py --models qwen3.5-plus --retry-failed
+
     # 使用benchmark数据集
     python exp/benchmark.py --data exp/data/benchmark_1000.jsonl --n 1000
 
     # 完整评测 (所有模型 + 100条)
     python exp/benchmark.py --all --n 100
+
+容错机制:
+- 429限流错误自动等待重试 (最多3次，递增等待时间)
+- checkpoint 记录每条病例状态 (success/failed)
+- --retry-failed 参数只重跑失败的病例
 """
 
 import os
@@ -41,7 +53,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src.schema import MedicalCase
-from src.medagent import LLMClient, KnowledgeBase, MedAgent, Judger, EvalResult
+from src.medagent import LLMClient, MedAgent, Judger, EvalResult
+from src.medagent.knowledge_tool_v2 import KeywordKnowledgeBase
 from src.medagent.llm import api_counter
 
 # =============================================================================
@@ -49,7 +62,7 @@ from src.medagent.llm import api_counter
 # =============================================================================
 
 MODEL_CONFIGS = {
-    # 302API 模型
+    # 302API 模型 (全部使用 302AI)
     "gpt-5.4": {
         "provider": "302",
         "base_url": "https://api.302.ai/v1",
@@ -65,64 +78,49 @@ MODEL_CONFIGS = {
         "base_url": "https://api.302.ai/v1",
         "api_key_env": "302_API_KEY",
     },
-
-    # 百炼 codingplan 模型
     "qwen3.5-plus": {
-        "provider": "bailian_cp",
-        "base_url": "https://coding.dashscope.aliyuncs.com/v1",
-        "api_key_env": "DASHSCOPE_API_KEY_CP",
-        "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+        "provider": "302",
+        "base_url": "https://api.302.ai/v1",
+        "api_key_env": "302_API_KEY",
     },
     "qwen3-max-2026-01-23": {
-        "provider": "bailian_cp",
-        "base_url": "https://coding.dashscope.aliyuncs.com/v1",
-        "api_key_env": "DASHSCOPE_API_KEY_CP",
-        "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+        "provider": "302",
+        "base_url": "https://api.302.ai/v1",
+        "api_key_env": "302_API_KEY",
     },
     "glm-5": {
-        "provider": "bailian_cp",
-        "base_url": "https://coding.dashscope.aliyuncs.com/v1",
-        "api_key_env": "DASHSCOPE_API_KEY_CP",
+        "provider": "302",
+        "base_url": "https://api.302.ai/v1",
+        "api_key_env": "302_API_KEY",
     },
     "kimi-k2.5": {
-        "provider": "bailian_cp",
-        "base_url": "https://coding.dashscope.aliyuncs.com/v1",
-        "api_key_env": "DASHSCOPE_API_KEY_CP",
+        "provider": "302",
+        "base_url": "https://api.302.ai/v1",
+        "api_key_env": "302_API_KEY",
     },
     "MiniMax-M2.5": {
-        "provider": "bailian_cp",
-        "base_url": "https://coding.dashscope.aliyuncs.com/v1",
-        "api_key_env": "DASHSCOPE_API_KEY_CP",
+        "provider": "302",
+        "base_url": "https://api.302.ai/v1",
+        "api_key_env": "302_API_KEY",
     },
-
-    # 百炼 normal 模型
     "deepseek-v3.2": {
-        "provider": "bailian",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "api_key_env": "DASHSCOPE_API_KEY",
-    },
-    "qwen3.5-35b-a3b": {
-        "provider": "bailian",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "api_key_env": "DASHSCOPE_API_KEY",
+        "provider": "302",
+        "base_url": "https://api.302.ai/v1",
+        "api_key_env": "302_API_KEY",
     },
 }
 
-# 默认评测模型列表
+# 默认评测模型列表 (全部使用 302AI)
 DEFAULT_MODELS = [
-    # 百炼 codingplan (优先)
+    "gpt-5.4",
+    "claude-opus-4-6",
+    "gemini-3.1-pro-preview",
     "qwen3.5-plus",
     "qwen3-max-2026-01-23",
     "glm-5",
     "kimi-k2.5",
     "MiniMax-M2.5",
-    # 百炼 normal
     "deepseek-v3.2",
-    "qwen3.5-35b-a3b",
-    # 302API
-    "gpt-5.4",
-    "claude-opus-4-6",
-    "gemini-3.1-pro-preview",
 ]
 
 
@@ -160,13 +158,14 @@ def load_cases(data_path: str) -> List[MedicalCase]:
 def run_single_model_eval(
     model_name: str,
     cases: List[MedicalCase],
-    knowledge_base: Optional[KnowledgeBase],
+    knowledge_base: Optional[KeywordKnowledgeBase],
     judger: Judger,
     max_steps: int = 20,
-    top_k: int = 10,
-    max_workers: int = 8,
+    top_k: int = 3,
+    max_workers: int = 5,
     checkpoint_file: Optional[str] = None,
     checkpoint_every: int = 10,
+    retry_failed: bool = False,  # 是否重跑失败的病例
 ) -> List[EvalResult]:
     """
     运行单个模型的评测
@@ -196,6 +195,7 @@ def run_single_model_eval(
 
     # 加载 checkpoint
     processed_ids = set()
+    failed_ids = set()  # 记录失败的病例ID
     results_dict = {}
 
     if checkpoint_file and os.path.exists(checkpoint_file):
@@ -206,48 +206,60 @@ def run_single_model_eval(
                     if line.strip():
                         data = json.loads(line)
                         case_id = data.get("case_id")
+                        status = data.get("status", "success")  # 默认成功
                         if case_id:
-                            processed_ids.add(case_id)
-                            results_dict[case_id] = EvalResult(
-                                case_id=case_id,
-                                diagnosis_correct=data.get("diagnosis_correct", False),
-                                diagnosis_score=data.get("diagnosis_score", 0),
-                                diagnosis_reason=data.get("diagnosis_reason", ""),
-                                treatment_correct=data.get("treatment_correct", False),
-                                treatment_score=data.get("treatment_score", 0),
-                                treatment_reason=data.get("treatment_reason", ""),
-                                avoid_violated=data.get("avoid_violated", False),
-                                avoid_score=data.get("avoid_score", 0),
-                                avoid_reason=data.get("avoid_reason", ""),
-                                avoid_violations=data.get("avoid_violations", []),
-                                total_score=data.get("total_score", 0),
-                                trajectory=data.get("trajectory", []),
-                                ground_truth=data.get("ground_truth", {}),
-                                agent_diagnosis=data.get("agent_diagnosis", ""),
-                                agent_treatment=data.get("agent_treatment", ""),
-                            )
-            print(f"  已恢复 {len(processed_ids)} 条")
+                            if status == "success":
+                                processed_ids.add(case_id)
+                                results_dict[case_id] = EvalResult(
+                                    case_id=case_id,
+                                    diagnosis_correct=data.get("diagnosis_correct", False),
+                                    diagnosis_score=data.get("diagnosis_score", 0),
+                                    diagnosis_reason=data.get("diagnosis_reason", ""),
+                                    treatment_correct=data.get("treatment_correct", False),
+                                    treatment_score=data.get("treatment_score", 0),
+                                    treatment_reason=data.get("treatment_reason", ""),
+                                    avoid_violated=data.get("avoid_violated", False),
+                                    avoid_score=data.get("avoid_score", 0),
+                                    avoid_reason=data.get("avoid_reason", ""),
+                                    avoid_violations=data.get("avoid_violations", []),
+                                    total_score=data.get("total_score", 0),
+                                    trajectory=data.get("trajectory", []),
+                                    ground_truth=data.get("ground_truth", {}),
+                                    agent_diagnosis=data.get("agent_diagnosis", ""),
+                                    agent_treatment=data.get("agent_treatment", ""),
+                                )
+                            elif status == "failed":
+                                failed_ids.add(case_id)  # 失败的病例需要重跑
+            print(f"  已恢复 {len(processed_ids)} 条成功, {len(failed_ids)} 条失败")
         except Exception as e:
             print(f"  checkpoint 加载失败: {e}")
 
     # 过滤未处理病例
-    remaining_cases = [c for c in cases if c.case_id not in processed_ids]
-    print(f"  剩余待处理: {len(remaining_cases)}/{len(cases)}")
+    if retry_failed:
+        # 只重跑失败的病例
+        remaining_cases = [c for c in cases if c.case_id in failed_ids]
+        print(f"  重跑失败病例: {len(remaining_cases)} 条")
+    else:
+        # 正常流程：跳过已成功的，重跑失败的和未处理的
+        remaining_cases = [c for c in cases if c.case_id not in processed_ids]
+        print(f"  剩余待处理: {len(remaining_cases)}/{len(cases)} (含 {len(failed_ids)} 条失败待重跑)")
 
     if not remaining_cases:
         return [results_dict.get(c.case_id) for c in cases]
 
-    # 保存 checkpoint
-    def save_checkpoint(batch_results: List[EvalResult]):
+    # 保存 checkpoint (带状态标记)
+    def save_checkpoint(batch_results: List[tuple]):
+        """保存 checkpoint，每项为 (EvalResult, status)"""
         if not checkpoint_file:
             return
         try:
             os.makedirs(os.path.dirname(checkpoint_file), exist_ok=True)
             mode = "a" if os.path.exists(checkpoint_file) else "w"
             with open(checkpoint_file, mode, encoding="utf-8") as f:
-                for r in batch_results:
+                for r, status in batch_results:
                     f.write(json.dumps({
                         "case_id": r.case_id,
+                        "status": status,  # "success" 或 "failed"
                         "diagnosis_correct": r.diagnosis_correct,
                         "diagnosis_score": r.diagnosis_score,
                         "diagnosis_reason": r.diagnosis_reason,
@@ -267,53 +279,76 @@ def run_single_model_eval(
         except Exception as e:
             print(f"  checkpoint 保存失败: {e}")
 
-    # 处理单个病例
-    def process_case(case: MedicalCase) -> EvalResult:
-        try:
-            agent = MedAgent(
-                llm_client=llm_client,
-                case=case,
-                knowledge_base=knowledge_base,
-                max_steps=max_steps,
-                top_k=top_k,
-                verbose=False,
-            )
+    # 处理单个病例 (带重试机制)
+    def process_case(case: MedicalCase, max_retries: int = 3) -> tuple:
+        last_error = None
+        for retry in range(max_retries):
+            try:
+                agent = MedAgent(
+                    llm_client=llm_client,
+                    case=case,
+                    knowledge_base=knowledge_base,
+                    max_steps=max_steps,
+                    top_k=top_k,
+                    verbose=False,
+                )
 
-            result = agent.run()
+                result = agent.run()
 
-            eval_result = judger.evaluate(
-                case_id=case.case_id,
-                chief_complaint=case.chief_complaint,
-                ground_truth={
-                    "diagnosis": case.ground_truth.diagnosis,
-                    "treatment": case.ground_truth.treatment,
-                    "avoid": case.ground_truth.avoid,
-                },
-                trajectory=result.get("trajectory", []),
-                agent_diagnosis=result.get("diagnosis", ""),
-                agent_treatment=result.get("treatment", ""),
-            )
+                eval_result = judger.evaluate(
+                    case_id=case.case_id,
+                    chief_complaint=case.chief_complaint,
+                    ground_truth={
+                        "diagnosis": case.ground_truth.diagnosis,
+                        "treatment": case.ground_truth.treatment,
+                        "avoid": case.ground_truth.avoid,
+                    },
+                    trajectory=result.get("trajectory", []),
+                    agent_diagnosis=result.get("diagnosis", ""),
+                    agent_treatment=result.get("treatment", ""),
+                )
 
-            return eval_result
+                return eval_result, "success"  # 成功标记
 
-        except Exception as e:
-            print(f"\n[Error] Case {case.case_id}: {e}")
-            return EvalResult(
-                case_id=case.case_id,
-                total_score=0,
-                trajectory=[],
-                ground_truth=case.case_to_dict().get("ground_truth", {}),
-            )
+            except Exception as e:
+                last_error = e
+                error_str = str(e)
+                # 429 限流错误，等待后重试
+                if "429" in error_str or "rate" in error_str.lower() or "throttl" in error_str.lower():
+                    wait_time = 60 * (retry + 1)  # 递增等待时间: 60s, 120s, 180s
+                    print(f"\n[Retry {retry+1}/{max_retries}] Case {case.case_id}: 429限流，等待{wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    print(f"\n[Retry {retry+1}/{max_retries}] Case {case.case_id}: {e}")
+                    if retry < max_retries - 1:
+                        time.sleep(5)  # 其他错误等待5秒
+
+        # 重试全部失败
+        print(f"\n[Failed] Case {case.case_id}: 所有重试失败 - {last_error}")
+        return EvalResult(
+            case_id=case.case_id,
+            total_score=0,
+            trajectory=[],
+            ground_truth=case.case_to_dict().get("ground_truth", {}),
+        ), "failed"  # 返回失败标记
 
     # 并发执行
     batch_results = []
+    success_count = 0
+    failed_count = 0
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(process_case, case): case for case in remaining_cases}
 
         for future in tqdm(as_completed(futures), total=len(futures), desc=f"{model_name}"):
-            eval_result = future.result()
+            result_tuple = future.result()
+            eval_result, status = result_tuple if isinstance(result_tuple, tuple) else (result_tuple, "success")
             results_dict[eval_result.case_id] = eval_result
-            batch_results.append(eval_result)
+            batch_results.append((eval_result, status))
+
+            if status == "success":
+                success_count += 1
+            else:
+                failed_count += 1
 
             if len(batch_results) >= checkpoint_every:
                 save_checkpoint(batch_results)
@@ -322,6 +357,7 @@ def run_single_model_eval(
     if batch_results:
         save_checkpoint(batch_results)
 
+    print(f"  完成: {success_count} 成功, {failed_count} 失败")
     return [results_dict.get(c.case_id) for c in cases]
 
 
@@ -497,7 +533,7 @@ def main():
     parser.add_argument(
         "--output",
         type=str,
-        default="exp/results",
+        default="exp/output",
         help="输出目录"
     )
     parser.add_argument(
@@ -518,10 +554,16 @@ def main():
         help="评测病例数量 (None 表示全部)"
     )
     parser.add_argument(
+        "--start",
+        type=int,
+        default=0,
+        help="起始病例索引 (默认从0开始)"
+    )
+    parser.add_argument(
         "--kb",
         type=str,
-        default="data/knowledge_db",
-        help="知识库路径"
+        default="data/knowledge_dataset/ResponseMed.json",
+        help="知识库路径 (ResponseMed.json)"
     )
     parser.add_argument(
         "--no-kb",
@@ -537,7 +579,7 @@ def main():
     parser.add_argument(
         "--max-workers",
         type=int,
-        default=8,
+        default=5,
         help="并发线程数"
     )
     parser.add_argument(
@@ -546,11 +588,44 @@ def main():
         default=10,
         help="每 N 条保存 checkpoint"
     )
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="只重跑 checkpoint 中标记为失败的病例"
+    )
+    parser.add_argument(
+        "--base-url",
+        type=str,
+        default=None,
+        help="自定义模型 base URL (用于本地部署模型，如 http://localhost:8000/v1)"
+    )
+    parser.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="自定义模型 API key (与 --base-url 配合使用)"
+    )
 
     args = parser.parse_args()
 
     # 时间戳
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # 如果指定了 --base-url，添加自定义模型配置
+    if args.base_url:
+        custom_model_name = args.models.split(",")[0].strip() if args.models else "custom"
+        MODEL_CONFIGS[custom_model_name] = {
+            "provider": "custom",
+            "base_url": args.base_url,
+            "api_key_env": None,
+        }
+        if args.api_key:
+            # 临时设置环境变量
+            os.environ["CUSTOM_API_KEY"] = args.api_key
+            MODEL_CONFIGS[custom_model_name]["api_key_env"] = "CUSTOM_API_KEY"
+        else:
+            # vLLM 本地部署可能不需要 API key
+            MODEL_CONFIGS[custom_model_name]["api_key_env"] = None
 
     # 确定评测模型
     if args.all:
@@ -569,7 +644,7 @@ def main():
     for m in models:
         print(f"  - {m}")
     print(f"知识库: {'不使用' if args.no_kb else args.kb}")
-    print(f"病例数: {'全部' if args.n is None else args.n}")
+    print(f"病例范围: [{args.start}:{args.start + args.n if args.n else 'end'}]")
     print("=" * 60)
 
     # 加载病例
@@ -578,16 +653,19 @@ def main():
     print(f"  加载 {len(cases)} 条病例")
 
     if args.n:
-        cases = cases[:args.n]
-        print(f"  选择前 {args.n} 条")
+        cases = cases[args.start:args.start + args.n]
+        print(f"  选择 [{args.start}:{args.start + args.n}] 共 {len(cases)} 条")
+    elif args.start > 0:
+        cases = cases[args.start:]
+        print(f"  选择 [{args.start}:] 共 {len(cases)} 条")
 
     # 加载知识库
     knowledge_base = None
     if not args.no_kb and os.path.exists(args.kb):
         print("\n[2/3] 加载知识库...")
-        knowledge_base = KnowledgeBase()
+        knowledge_base = KeywordKnowledgeBase()
         knowledge_base.load(args.kb)
-        print(f"  加载 {knowledge_base.count()} 条知识")
+        print(f"  加载 {len(knowledge_base.records)} 条知识")
 
     # 初始化 Judger
     judger = Judger()
@@ -608,14 +686,19 @@ def main():
             print(f"\n[Skip] 未找到模型配置: {model_name}")
             continue
 
-        # 检查 API key
-        api_key = os.getenv(config["api_key_env"])
-        if not api_key:
-            print(f"\n[Skip] 环境变量 {config['api_key_env']} 未设置")
+        # 检查 API key (本地部署可能不需要)
+        api_key_env = config.get("api_key_env")
+        api_key = os.getenv(api_key_env) if api_key_env else "dummy"
+        if not api_key_env:
+            print(f"\n[Info] 使用本地部署模型: {model_name} ({config['base_url']})")
+        elif not api_key:
+            print(f"\n[Skip] 环境变量 {api_key_env} 未设置")
             continue
 
         # checkpoint 文件
-        checkpoint_file = os.path.join(args.output, f"checkpoint_{model_name}.jsonl")
+        # checkpoint 文件名包含 start 参数，避免不同范围的测试互相干扰
+        checkpoint_suffix = f"_start{args.start}" if args.start > 0 else ""
+        checkpoint_file = os.path.join(args.output, f"checkpoint_{model_name}{checkpoint_suffix}.jsonl")
 
         # 运行评测
         results = run_single_model_eval(
@@ -627,6 +710,7 @@ def main():
             max_workers=args.max_workers,
             checkpoint_file=checkpoint_file,
             checkpoint_every=args.checkpoint_every,
+            retry_failed=args.retry_failed,
         )
 
         if results:
