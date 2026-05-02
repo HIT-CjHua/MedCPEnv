@@ -22,22 +22,36 @@ echo "环境名称: ${ENV_NAME}"
 echo "Python 版本: ${PYTHON_VERSION}"
 echo "============================================================"
 
+# 修复 conda 频道配置 (清华镜像 free 频道已失效)
+echo "[0/6] 修复 conda 频道配置..."
+conda config --remove-key channels 2>/dev/null || true
+conda config --add channels conda-forge 2>/dev/null || true
+
 # 创建 conda 环境
-echo ""
-echo "[1/5] 创建 conda 环境..."
+echo "[1/6] 创建 conda 环境..."
 conda create -n ${ENV_NAME} python=${PYTHON_VERSION} -y
 
 # 激活环境
-echo "[2/5] 激活环境..."
+echo "[2/6] 激活环境..."
 eval "$(conda shell.bash hook)"
 conda activate ${ENV_NAME}
 
-# 安装 PyTorch (CUDA 12.1)
-echo "[3/5] 安装 PyTorch (CUDA 12.1)..."
+# 检测 CUDA 版本
+CUDA_VERSION=$(python -c "import torch; print(torch.version.cuda.split('.')[0] + '.' + torch.version.cuda.split('.')[1])" 2>/dev/null || echo "unknown")
+echo "[3/6] 检测 CUDA 版本: ${CUDA_VERSION}"
+
+# 安装 PyTorch (CUDA 12.1/12.4)
+echo "[3/6] 安装 PyTorch..."
+# 如果服务器 CUDA >= 12.1，使用 cu121；否则使用 cu118
+if command -v nvcc &> /dev/null; then
+    NVCC_CUDA=$(nvcc --version | grep "release" | awk '{print $6}' | cut -d',' -f1)
+    echo "  系统 CUDA: ${NVCC_CUDA}"
+fi
+
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
 # 安装核心依赖
-echo "[4/5] 安装核心依赖..."
+echo "[4/6] 安装核心依赖..."
 pip install --upgrade pip
 
 # 安装 TRL 及其依赖 (包含 transformers, accelerate, peft)
@@ -58,18 +72,19 @@ pip install \
     "jmespath>=1.0.0" \
     "peft>=0.7.0"
 
-# 安装可选依赖
-echo "[5/5] 安装可选依赖..."
+# 安装可选依赖 (flash-attn 可能编译失败，注释掉)
+echo "[5/6] 安装可选依赖..."
 pip install \
-    "flash-attn>=2.5.0" \
     "trackio" \
     "bitsandbytes" \
     "optimum"
 
+# flash-attn 需要编译，如果 CUDA 版本不匹配可能失败
+# pip install "flash-attn>=2.5.0" --no-build-isolation
+
 # 验证安装
 echo ""
-echo "============================================================"
-echo "验证安装..."
+echo "[6/6] 验证安装..."
 echo "============================================================"
 python -c "
 import torch
