@@ -51,7 +51,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from src.schema import MedicalCase
 from .llm import LLMClient
 from .tool import ToolManager
-from .knowledge_base import KnowledgeBase
+from .knowledge_tool_v2 import KeywordKnowledgeBase
 
 
 @dataclass
@@ -73,63 +73,63 @@ class MedAgent:
     """
 
     SYSTEM_PROMPT = """/no_think
-你是一名专业的医疗问诊AI助手。你需要根据患者的主诉，通过问诊、检查和知识查询来做出诊断。
+You are a professional medical consultation AI assistant. Your task is to diagnose patients based on their chief complaints through questioning, examinations, and knowledge queries.
 
-## 可用工具
+## Available Tools
 
 {tools_prompt}
 
-## 动作说明
+## Actions
 
-1. ASK: 问诊，获取患者主观信息（症状、病史等）
-2. EXAM: 检查，获取患者客观信息（化验、影像等）
-3. KNOWLEDGE: 查询医学知识库
-4. FINAL: 给出最终诊断和治疗建议
+1. ASK: Consult to obtain the patient's subjective information (symptoms, medical history, etc.)
+2. EXAM: Examine to obtain the patient's objective information (lab tests, imaging, etc.)
+3. KNOWLEDGE: Query the medical knowledge base using keywords (returns top-3 matched QA records)
+4. FINAL: Provide final diagnosis and treatment recommendations
 
-## 输出格式
+## Output Format
 
-使用 XML 标签输出你的决策:
+Use XML tags to output your decision:
 
-问诊:
+Consultation:
 <act>
     <action>ASK</action>
-    <keywords>关键词1, 关键词2</keywords>
+    <keywords>keyword1, keyword2</keywords>
 </act>
 
-检查:
+Examination:
 <act>
     <action>EXAM</action>
-    <keywords>检查项1, 检查项2</keywords>
+    <keywords>test_item1, test_item2</keywords>
 </act>
 
-知识查询:
+Knowledge Query:
 <act>
     <action>KNOWLEDGE</action>
-    <query>查询内容</query>
+    <keywords>keyword1, keyword2, keyword3</keywords>
 </act>
 
-最终诊断:
+Final Diagnosis:
 <act>
     <action>FINAL</action>
-    <diagnosis>诊断结果</diagnosis>
-    <treatment>治疗建议</treatment>
+    <diagnosis>diagnosis result</diagnosis>
+    <treatment>treatment recommendation</treatment>
 </act>
 
-## 注意事项
+## Notes
 
-1. 每次只输出一个动作
-2. 根据患者主诉，优先问诊获取关键信息
-3. 合理选择检查项目，避免过度检查
-4. 有疑问时可以查询知识库
-5. 获得足够信息后给出诊断"""
+1. Output only one action at a time
+2. Based on the chief complaint, prioritize consultation to obtain key information
+3. Choose examination items appropriately, avoid over-testing
+4. Query the knowledge base using multiple relevant keywords when in doubt (e.g., disease name, diagnostic criteria, treatment)
+5. Provide diagnosis and treatment once you have sufficient information"""
 
     def __init__(
         self,
         llm_client: LLMClient,
         case: MedicalCase,
-        knowledge_base: Optional[KnowledgeBase] = None,
+        knowledge_base: Optional[KeywordKnowledgeBase] = None,
         max_steps: int = 20,
-        top_k: int = 10,
+        top_k: int = 3,
         verbose: bool = True,
     ):
         self.llm_client = llm_client
@@ -154,7 +154,7 @@ class MedAgent:
 
         return [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"患者主诉: {self.case.chief_complaint}\n\n请开始问诊。"},
+            {"role": "user", "content": f"Chief Complaint: {self.case.chief_complaint}\n\nPlease start the consultation."},
         ]
 
     def _extract_tag(self, text: str, tag: str) -> Optional[str]:
@@ -182,12 +182,11 @@ class MedAgent:
         解析 LLM 输出的动作
 
         Returns:
-            Dict: {"action": str, "keywords": List[str], "query": str, "diagnosis": str, "treatment": str}
+            Dict: {"action": str, "keywords": List[str], "diagnosis": str, "treatment": str}
         """
         result = {
             "action": None,
             "keywords": [],
-            "query": "",
             "diagnosis": "",
             "treatment": "",
         }
@@ -201,11 +200,6 @@ class MedAgent:
         keywords = self._extract_tag(response, "keywords")
         if keywords:
             result["keywords"] = [k.strip() for k in keywords.split(",") if k.strip()]
-
-        # 提取 query
-        query = self._extract_tag(response, "query")
-        if query:
-            result["query"] = query.strip()
 
         # 提取 diagnosis
         diagnosis = self._extract_tag(response, "diagnosis")
@@ -230,16 +224,16 @@ class MedAgent:
             return self.tool_manager.execute("EXAM", keywords=parsed.get("keywords", []))
 
         elif action == "KNOWLEDGE":
-            return self.tool_manager.execute("KNOWLEDGE", query=parsed.get("query", ""))
+            return self.tool_manager.execute("KNOWLEDGE", keywords=parsed.get("keywords", []))
 
         elif action == "FINAL":
             self.state.diagnosis = parsed.get("diagnosis", "")
             self.state.treatment = parsed.get("treatment", "")
             self.state.is_done = True
-            return f"诊断: {self.state.diagnosis}\n治疗建议: {self.state.treatment}"
+            return f"Diagnosis: {self.state.diagnosis}\nTreatment: {self.state.treatment}"
 
         else:
-            return f"未知动作: {action}，请使用 ASK/EXAM/KNOWLEDGE/FINAL 之一。"
+            return f"Unknown action: {action}. Use one of: ASK/EXAM/KNOWLEDGE/FINAL."
 
     def _summarize_observation(self, action: str, result: str, max_length: int = 300) -> str:
         """
@@ -340,7 +334,7 @@ class MedAgent:
             # 过滤思考内容后再追加
             filtered_response = self._remove_thinking(response)
             self.state.messages.append({"role": "assistant", "content": filtered_response})
-            self.state.messages.append({"role": "user", "content": "请使用正确的 XML 格式输出动作。"})
+            self.state.messages.append({"role": "user", "content": "Please output your action in valid XML format."})
 
             return {"action": "INVALID", "result": "格式错误", "done": False}, False
 
