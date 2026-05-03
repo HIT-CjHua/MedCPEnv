@@ -21,7 +21,7 @@ MedAgent Agentic RL Training with GRPO (TRL)
 
 要求:
     - GPU: 用于训练模型和推理
-    - 知识库: data/knowledge_db (可选，用于 KNOWLEDGE 工具)
+    - 知识库: data/knowledge_dataset/ResponseMed.json (可选，基于关键词匹配的知识查询工具)
 """
 
 import os

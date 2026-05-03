@@ -16,7 +16,7 @@ MedAgent 评测脚本
     python scripts/eval.py --model qwen3.5-plus --n 100
 
     # 使用知识库
-    python scripts/eval.py --kb data/knowledge_db
+    python scripts/eval.py --kb data/knowledge_dataset/ResponseMed.json
 """
 
 import os
@@ -36,7 +36,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.schema import MedicalCase
-from src.medagent import LLMClient, KnowledgeBase, MedAgent, Judger, EvalResult, EfficiencyStats, CostEvaluator
+from src.medagent import LLMClient, MedAgent, Judger, EvalResult, EfficiencyStats, CostEvaluator
+from src.medagent.knowledge_tool_v2 import KeywordKnowledgeBase
 from src.medagent.llm import api_counter
 
 
@@ -493,8 +494,8 @@ def main():
     parser.add_argument(
         "--kb",
         type=str,
-        default="data/knowledge_db",
-        help="知识库路径",
+        default="data/knowledge_dataset/ResponseMed.json",
+        help="知识库路径 (ResponseMed.json)",
     )
 
     parser.add_argument(
@@ -575,9 +576,9 @@ def main():
 
     knowledge_base = None
     if not args.no_kb and os.path.exists(args.kb):
-        knowledge_base = KnowledgeBase()
+        knowledge_base = KeywordKnowledgeBase()
         knowledge_base.load(args.kb)
-        print(f"  知识库已加载 ({knowledge_base.count()} 条)")
+        print(f"  知识库已加载 ({len(knowledge_base.records)} 条)")
     else:
         print("  知识库未加载")
 

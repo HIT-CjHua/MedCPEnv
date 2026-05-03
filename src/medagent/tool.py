@@ -22,7 +22,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from src.schema import MedicalCase, MedicalItem
-from .knowledge_base import KnowledgeBase
+from .knowledge_tool_v2 import KeywordKnowledgeBase
 
 
 @dataclass
@@ -68,9 +68,9 @@ class AskTool(BaseTool):
     def info(self) -> ToolInfo:
         return ToolInfo(
             name="ASK",
-            description="问诊工具，用于获取患者的主观信息（症状描述、病史等）",
-            input_desc="keywords (List[str]) - 问诊关键词列表，如 ['疼痛性质', '疼痛部位', '持续时间']",
-            output_desc="String - 患者的回答，如果未匹配到相关信息则返回'相关信息不明'",
+            description="Consultation tool to obtain patient's subjective information (symptoms, medical history, etc.)",
+            input_desc="keywords (List[str]) - consultation keyword list, e.g. ['pain character', 'pain location', 'duration']",
+            output_desc="String - patient's response, or 'Information unclear' if no match found",
         )
 
     def execute(self, keywords: List[str]) -> str:
@@ -84,7 +84,7 @@ class AskTool(BaseTool):
             str: 匹配到的内容或"相关信息不明"
         """
         if not keywords:
-            return "请提供问诊关键词。"
+            return "Please provide consultation keywords."
 
         matched_contents = []
         matched_items = []
@@ -102,7 +102,7 @@ class AskTool(BaseTool):
                 break
 
         if not matched_contents:
-            return "相关信息不明。"
+            return "Information unclear."
 
         # 去重并返回
         unique_contents = list(dict.fromkeys(matched_contents))
@@ -123,9 +123,9 @@ class ExamTool(BaseTool):
     def info(self) -> ToolInfo:
         return ToolInfo(
             name="EXAM",
-            description="检查工具，用于获取患者的客观信息（化验结果、影像学检查等）",
-            input_desc="keywords (List[str]) - 检查关键词列表，如 ['血常规', '胸片', '心电图']",
-            output_desc="String - 检查结果，如果未匹配到相关检查则返回'相关检查不适用'",
+            description="Examination tool to obtain patient's objective information (lab tests, imaging, etc.)",
+            input_desc="keywords (List[str]) - examination keyword list, e.g. ['CBC', 'chest X-ray', 'ECG']",
+            output_desc="String - examination results, or 'Examination not applicable' if no match found",
         )
 
     def execute(self, keywords: List[str]) -> str:
@@ -139,7 +139,7 @@ class ExamTool(BaseTool):
             str: 匹配到的内容或"相关检查不适用"
         """
         if not keywords:
-            return "请提供检查关键词。"
+            return "Please provide examination keywords."
 
         matched_contents = []
 
@@ -155,7 +155,7 @@ class ExamTool(BaseTool):
                 break
 
         if not matched_contents:
-            return "相关检查不适用。"
+            return "Examination not applicable."
 
         # 去重并返回
         unique_contents = list(dict.fromkeys(matched_contents))
@@ -164,58 +164,53 @@ class ExamTool(BaseTool):
 
 class KnowledgeTool(BaseTool):
     """
-    知识库查询工具
-
-    使用 query 在知识库中检索、重排、摘要
+    知识库查询工具 (v2 - 关键词匹配)
+    
+    使用多个关键词在 ResponseMed.json 中检索完整 QA 数据
+    返回 topk 条结果
     """
 
     def __init__(
         self,
-        knowledge_base: Optional[KnowledgeBase] = None,
-        top_k: int = 10,
-        rerank_top_n: int = 3,
-        max_length: int = 500,
+        knowledge_base: Optional[KeywordKnowledgeBase] = None,
+        top_k: int = 3,
     ):
         self.knowledge_base = knowledge_base
         self.top_k = top_k
-        self.rerank_top_n = rerank_top_n
-        self.max_length = max_length
 
     @property
     def info(self) -> ToolInfo:
         return ToolInfo(
             name="KNOWLEDGE",
-            description="知识库查询工具，用于检索医学知识",
-            input_desc="query (str) - 查询内容，如 '急性阑尾炎的诊断标准'",
-            output_desc="String - 相关知识的摘要",
+            description="Knowledge base query tool using keyword matching to retrieve medical QA data",
+            input_desc="keywords (List[str]) - keyword list for querying medical knowledge, e.g. ['appendicitis', 'diagnostic criteria', 'treatment']",
+            output_desc="String - top-k matched QA records from knowledge base with full question and answer",
         )
 
-    def execute(self, query: str) -> str:
+    def execute(self, keywords: List[str]) -> str:
         """
         执行知识库查询
 
         Args:
-            query: 查询内容
+            keywords: 查询关键词列表
 
         Returns:
-            str: 相关知识摘要
+            str: 匹配到的 QA 数据摘要
         """
-        if not query:
-            return "请提供查询内容。"
+        if not keywords:
+            return "Please provide keywords for knowledge base query."
 
         if self.knowledge_base is None:
-            return "知识库未初始化。"
+            return "Knowledge base not initialized."
 
         try:
-            result = self.knowledge_base.search_with_summary(
-                query=query,
-                top_k=self.top_k,
-                rerank_top_n=self.rerank_top_n,
-                max_length=self.max_length,
+            results = self.knowledge_base.search(
+                keywords=keywords,
+                top_k=self.top_k
             )
-            return result
+            return self.knowledge_base.format_results(results)
         except Exception as e:
-            return f"知识库查询失败: {str(e)}"
+            return f"Knowledge base query failed: {str(e)}"
 
 
 class ToolManager:
@@ -228,8 +223,8 @@ class ToolManager:
     def __init__(
         self,
         case: MedicalCase,
-        knowledge_base: Optional[KnowledgeBase] = None,
-        top_k: int = 10,
+        knowledge_base: Optional[KeywordKnowledgeBase] = None,
+        top_k: int = 3,
     ):
         self.tools = {
             "ASK": AskTool(case),
@@ -245,7 +240,7 @@ class ToolManager:
         """执行工具"""
         tool = self.get_tool(name)
         if tool is None:
-            return f"未知工具: {name}"
+            return f"Unknown tool: {name}"
         return tool.execute(**kwargs)
 
     def get_all_tools_prompt(self) -> str:
