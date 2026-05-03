@@ -252,13 +252,13 @@ def tool_knowledge(keywords: str) -> str:
         "脑卒中": "急性脑卒中：突发神经功能缺损，CT/MRI确诊。治疗：溶栓（缺血性）或手术（出血性），康复。",
         "骨折": "骨折诊断：外伤史、疼痛肿胀畸形，X线确诊。治疗：复位固定，康复训练。",
     }
-    
-    query_lower = query.strip().lower()
+
+    query_lower = keywords.strip().lower()
     for key, resp in simulated_knowledge.items():
         if key in query_lower or query_lower in key:
             return resp
-    
-    return f"[知识库] 关于 '{query.strip()}' 的相关知识已检索。"
+
+    return f"[知识库] 关于 '{keywords.strip()}' 的相关知识已检索。"
 
 
 # -----------------------------------------------------------------------------
@@ -278,7 +278,7 @@ SYSTEM_PROMPT = """你是一名专业的医疗问诊AI助手。你需要根据�
    参数: keywords - 关键词，用逗号分隔
 
 3. tool_knowledge: 知识库查询工具
-   参数: query - 查询内容
+   参数: keywords - 查询关键词，用逗号分隔
 
 ## 诊断流程建议
 
