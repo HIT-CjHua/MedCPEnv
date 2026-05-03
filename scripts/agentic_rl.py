@@ -41,7 +41,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 # 设置默认 API Key (Judger 使用 Baichuan-M2)
-os.environ.setdefault("BAICHUAN_API_KEY", "sk-aeadfa5f7122ad2358623ab8ab04")
+# 直接覆盖，确保使用正确的 key
+os.environ["BAICHUAN_API_KEY"] = "sk-aeadfa5f7122ad2358623ab8ab04"
 
 from src.schema import MedicalCase, MedicalItem, GroundTruth
 from src.medagent.tool import AskTool, ExamTool, KnowledgeTool
