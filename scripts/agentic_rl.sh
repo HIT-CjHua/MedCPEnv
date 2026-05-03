@@ -34,7 +34,9 @@ run_experiment() {
         --output-dir ${output_dir} \
         --max-steps ${MAX_STEPS} \
         --batch-size ${BATCH_SIZE} \
-        --learning-rate ${LR}"
+        --learning-rate ${LR} \
+        --use-lora \
+        --use-vllm"
 
     if [ "$enable_efficiency" = "true" ]; then
         CMD="${CMD}"
