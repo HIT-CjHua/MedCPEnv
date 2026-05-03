@@ -172,34 +172,43 @@ class CostEvaluator:
     """
     费用评估器
 
-    使用 Baichuan 官方 API 提取诊疗项目，通过价格清单匹配或生成的方式进行费用估算
+    使用 LLM 提取诊疗项目，通过价格清单匹配或生成的方式进行费用估算
     """
 
     def __init__(
         self,
         price_list_path: str = "data/cost_list/cost_reference.jsonl",
-        m2_url: str = "https://api.baichuan-ai.com/v1",  # Baichuan 官方 API
+        m2_url: str = "https://api.baichuan-ai.com/v1",
         m2_model: str = "Baichuan-M2",
         auto_save: bool = True,
+        llm_client: Optional[LLMClient] = None,
+        api_key: Optional[str] = None,
     ):
         """
         初始化费用评估器
 
         Args:
             price_list_path: 价格清单路径
-            m2_url: Baichuan 官方 API 地址
-            m2_model: Baichuan 模型名称
+            m2_url: LLM API 地址
+            m2_model: LLM 模型名称
             auto_save: 是否自动保存新生成的价格到清单
+            llm_client: LLM 客户端（可选，优先级高于 api_key）
+            api_key: API Key（可选，如果未提供则从环境变量读取）
         """
         self.price_list_path = Path(price_list_path)
         self.m2_model = m2_model
-        self.m2_client = LLMClient(
-            model_name=m2_model,
-            base_url=m2_url,
-            api_key=os.getenv("BAICHUAN_API_KEY"),
-            max_tokens=32768,  # 32K 避免截断
-        )
         self.auto_save = auto_save
+
+        # 初始化 LLM 客户端
+        if llm_client is not None:
+            self.m2_client = llm_client
+        else:
+            self.m2_client = LLMClient(
+                model_name=m2_model,
+                base_url=m2_url,
+                api_key=api_key or os.getenv("BAICHUAN_API_KEY"),
+                max_tokens=32768,  # 32K 避免截断
+            )
 
         # 加载价格清单
         self.price_list: List[Dict] = self._load_price_list()
