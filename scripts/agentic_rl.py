@@ -40,9 +40,8 @@ from datasets import Dataset
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# 设置默认 API Key (Judger 使用 Baichuan-M2)
-# 直接覆盖，确保使用正确的 key
-os.environ["BAICHUAN_API_KEY"] = "sk-aeadfa5f7122ad2358623ab8ab04"
+# Judger 默认使用规则匹配评估模式，不需要 API Key
+# 如果需要 LLM 评估，设置 BAICHUAN_API_KEY 环境变量
 
 from src.schema import MedicalCase, MedicalItem, GroundTruth
 from src.medagent.tool import AskTool, ExamTool, KnowledgeTool
@@ -374,7 +373,7 @@ def load_training_data(data_path: str, max_samples: Optional[int] = None) -> Dat
 _judger: Optional[Judger] = None
 
 
-def get_judger(reward_config: Optional[RewardConfig] = None) -> Judger:
+def get_judger(reward_config: Optional[RewardConfig] = None, use_rule_only: bool = False) -> Judger:
     """获取或初始化 Judger 实例"""
     global _judger
     if _judger is None:
@@ -382,8 +381,12 @@ def get_judger(reward_config: Optional[RewardConfig] = None) -> Judger:
         _judger = Judger(
             model_name=config.judger_model,
             base_url=config.judger_base_url,
+            use_rule_only=use_rule_only,
         )
-        print(f"[Judger] 初始化完成: {config.judger_model} @ {config.judger_base_url}")
+        if use_rule_only:
+            print(f"[Judger] 使用规则匹配模式（无需 LLM API）")
+        else:
+            print(f"[Judger] 初始化完成: {config.judger_model} @ {config.judger_base_url}")
     return _judger
 
 
@@ -899,6 +902,12 @@ def main():
         help="是否禁用 Judger 评分（使用简单匹配作为备选）",
     )
     parser.add_argument(
+        "--rule-only-judger",
+        action="store_true",
+        default=True,  # 默认启用规则匹配模式，不需要 LLM API
+        help="Judger 仅使用规则匹配评估（不调用 LLM API）",
+    )
+    parser.add_argument(
         "--judger-model",
         type=str,
         default="Baichuan-M2",
@@ -973,7 +982,7 @@ def main():
 
     # 预初始化 Judger（如果启用）
     if reward_config.enable_judger:
-        get_judger(reward_config)
+        get_judger(reward_config, use_rule_only=args.rule_only_judger)
 
     reward_funcs = build_reward_functions(reward_config)
 

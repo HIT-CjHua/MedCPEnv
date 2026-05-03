@@ -176,6 +176,7 @@ class Judger:
         base_url: str = "https://api.baichuan-ai.com/v1",  # Baichuan 官方 API
         cost_evaluator: Optional[CostEvaluator] = None,
         enable_cost: bool = False,
+        use_rule_only: bool = False,  # 仅使用规则匹配，不调用 LLM
     ):
         """
         初始化评测器
@@ -186,14 +187,25 @@ class Judger:
             base_url: API 服务地址
             cost_evaluator: 费用评估器（可选）
             enable_cost: 是否启用费用评估
+            use_rule_only: 仅使用规则匹配评估，不调用 LLM API
         """
-        if llm_client is None:
-            self.llm_client = LLMClient(
-                model_name=model_name,
-                base_url=base_url,
-                api_key=os.getenv("BAICHUAN_API_KEY"),
-                max_tokens=32768,  # 32K 避免截断
-            )
+        self.use_rule_only = use_rule_only
+        if use_rule_only:
+            self.llm_client = None
+            print("[Judger] 使用规则匹配评估模式（无需 LLM API）")
+        elif llm_client is None:
+            api_key = os.getenv("BAICHUAN_API_KEY")
+            if not api_key:
+                print("[Judger Warning] BAICHUAN_API_KEY not set, falling back to rule-based evaluation")
+                self.llm_client = None
+                self.use_rule_only = True
+            else:
+                self.llm_client = LLMClient(
+                    model_name=model_name,
+                    base_url=base_url,
+                    api_key=api_key,
+                    max_tokens=32768,  # 32K 避免截断
+                )
         else:
             self.llm_client = llm_client
         self.model_name = model_name
@@ -365,6 +377,15 @@ class Judger:
         gt_diagnosis = ground_truth.get("diagnosis", [])
         gt_treatment = ground_truth.get("treatment", [])
         gt_avoid = ground_truth.get("avoid", [])
+
+        # 如果仅使用规则匹配，直接返回
+        if self.use_rule_only:
+            result = self._fallback_evaluate(
+                result, gt_diagnosis, gt_treatment, gt_avoid, agent_diagnosis, agent_treatment
+            )
+            # 效率统计
+            result.efficiency = self._analyze_efficiency(trajectory)
+            return result
 
         # 构建轨迹摘要
         trajectory_summary = self._build_trajectory_summary(trajectory)
