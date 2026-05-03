@@ -872,7 +872,7 @@ def main():
     parser.add_argument(
         "--kb-path",
         type=str,
-        default="data/knowledge_db",
+        default="data/knowledge_dataset/ResponseMed.json",
         help="知识库路径",
     )
     parser.add_argument(
