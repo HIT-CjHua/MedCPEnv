@@ -10,7 +10,7 @@ set -e
 
 # ============================ 配置 ============================
 MODEL="/root/autodl-tmp/models/Qwen/Qwen3-4B"
-DATA="data/train.jsonl"
+DATA="data/datasets/train.jsonl"
 OUTPUT_BASE="output/agentic_rl"
 MAX_STEPS=500
 BATCH_SIZE=8

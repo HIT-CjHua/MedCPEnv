@@ -800,7 +800,7 @@ def main():
     parser.add_argument(
         "--data",
         type=str,
-        default="data/train.jsonl",
+        default="data/datasets/train.jsonl",
         help="训练数据路径",
     )
     parser.add_argument(
