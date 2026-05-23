@@ -9,12 +9,23 @@
 set -e
 
 # ============================ 配置 ============================
-MODEL="/root/autodl-tmp/models/Qwen/Qwen3-4B"
-DATA="data/datasets/train.jsonl"
-OUTPUT_BASE="output/agentic_rl"
-MAX_STEPS=500
-BATCH_SIZE=8
-LR=1e-5
+MODEL="${MODEL:-/dev/shm/model/Qwen3-4B}"
+DATA="${DATA:-data/datasets/train.jsonl}"
+OUTPUT_BASE="${OUTPUT_BASE:-output/agentic_rl}"
+MAX_STEPS="${MAX_STEPS:-500}"
+BATCH_SIZE="${BATCH_SIZE:-8}"
+LR="${LR:-1e-5}"
+USE_VLLM="${USE_VLLM:-false}"
+PYDEPS_DIR="${PYDEPS_DIR:-/tmp/medagent_pydeps}"
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+
+export CUDA_VISIBLE_DEVICES
+export PYTORCH_CUDA_ALLOC_CONF
+
+if [ -d "$PYDEPS_DIR" ]; then
+    export PYTHONPATH="${PYDEPS_DIR}:${PYTHONPATH:-}"
+fi
 
 # ============================ 工具函数 ============================
 run_experiment() {
@@ -35,8 +46,11 @@ run_experiment() {
         --max-steps ${MAX_STEPS} \
         --batch-size ${BATCH_SIZE} \
         --learning-rate ${LR} \
-        --use-lora \
-        --use-vllm"
+        --use-lora"
+
+    if [ "$USE_VLLM" = "true" ]; then
+        CMD="${CMD} --use-vllm"
+    fi
 
     if [ "$enable_efficiency" = "true" ]; then
         CMD="${CMD}"
@@ -59,11 +73,11 @@ run_experiment() {
 
 # ============================ 四组实验 ============================
 
-# 实验1: 只使用医疗奖励
-run_experiment "medical_only" "false" "false"
+# # 实验1: 只使用医疗奖励
+# run_experiment "medical_only" "false" "false"
 
-# 实验2: 医疗奖励 + 效率奖励
-run_experiment "medical_efficiency" "true" "false"
+# # 实验2: 医疗奖励 + 效率奖励
+# run_experiment "medical_efficiency" "true" "false"
 
 # 实验3: 医疗奖励 + cost奖励
 run_experiment "medical_cost" "false" "true"

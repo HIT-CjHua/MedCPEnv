@@ -71,7 +71,7 @@ bash scripts/agentic_rl.sh
 
 ```bash
 python scripts/agentic_rl.py \
-    --model /root/autodl-tmp/models/Qwen/Qwen3-4B \
+    --model /dev/shm/model/Qwen3-4B \
     --data data/datasets/train.jsonl \
     --output-dir output/agentic_rl/medical_only \
     --max-steps 500 \
@@ -83,7 +83,7 @@ python scripts/agentic_rl.py \
 
 # 或者启用所有奖励
 python scripts/agentic_rl.py \
-    --model /root/autodl-tmp/models/Qwen/Qwen3-4B \
+    --model /dev/shm/model/Qwen3-4B \
     --data data/datasets/train.jsonl \
     --output-dir output/agentic_rl/medical_efficiency_cost \
     --max-steps 500 \
@@ -98,7 +98,7 @@ python scripts/agentic_rl.py \
 
 | 参数 | 默认值 | 说明 |
 |------|-------|------|
-| `--model` | Qwen/Qwen3-4B | 基座模型路径 |
+| `--model` | /dev/shm/model/Qwen3-4B | 基座模型路径 |
 | `--data` | data/datasets/train.jsonl | 训练数据路径 |
 | `--output-dir` | output/agentic_rl | 输出目录 |
 | `--max-steps` | 500 | 最大训练步数 |
@@ -147,17 +147,17 @@ python exp/benchmark.py --models qwen3-4b-base \
 
 ```bash
 # 测试 base 模型
-bash scripts/model_test.sh --model-path Qwen/Qwen3-4B --n 100
+bash scripts/model_test.sh --model-path /dev/shm/model/Qwen3-4B --n 100
 
 # 测试 LoRA 微调模型
 bash scripts/model_test.sh \
-    --model-path Qwen/Qwen3-4B \
+    --model-path /dev/shm/model/Qwen3-4B \
     --lora-path output/agentic_rl/medical_only \
     --n 100
 
 # 自定义模型名称
 bash scripts/model_test.sh \
-    --model-path Qwen/Qwen3-4B \
+    --model-path /dev/shm/model/Qwen3-4B \
     --model-name qwen3-4b-base \
     --n 500
 ```
@@ -222,7 +222,7 @@ python scripts/rag.py \
 
 ```bash
 bash scripts/train_multi_gpu.sh \
-    --model Qwen/Qwen3-4B \
+    --model /dev/shm/model/Qwen3-4B \
     --data data/datasets/train.jsonl \
     --output output/trained_model \
     --nproc-per-node 4 \

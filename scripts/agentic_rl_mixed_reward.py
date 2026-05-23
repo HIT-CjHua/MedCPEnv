@@ -11,13 +11,13 @@ MedAgent Agentic RL Training with GRPO (TRL)
 
 使用方式:
     # 默认训练
-    python scripts/agentic_rl.py
+    python scripts/agentic_rl_mixed_reward.py
 
     # 指定模型和参数
-    python scripts/agentic_rl.py --model /dev/shm/model/Qwen3-4B --max-steps 1000
+    python scripts/agentic_rl_mixed_reward.py --model /dev/shm/model/Qwen3-4B --max-steps 1000
 
     # 使用LoRA微调
-    python scripts/agentic_rl.py --use-lora --lora-r 16
+    python scripts/agentic_rl_mixed_reward.py --use-lora --lora-r 16
 
 要求:
     - GPU: 用于训练模型和推理
@@ -46,7 +46,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.schema import MedicalCase, MedicalItem, GroundTruth
 from src.medagent.tool import AskTool, ExamTool, KnowledgeTool
 from src.medagent.knowledge_tool_v2 import KeywordKnowledgeBase
-from src.medagent. import Judger
+from src.medagent.judger import Judger
 
 
 # -----------------------------------------------------------------------------
@@ -79,6 +79,19 @@ class RewardConfig:
     # 成本奖励
     enable_cost_reward: bool = False
     cost_reward_scale: float = 1.0  # 组内排序奖励的缩放因子
+
+    # 混合奖励：质量为主，效率/成本只作为约束和小幅加分
+    enable_mixed_reward: bool = True
+    quality_gate_diagnosis: float = 3.0
+    quality_gate_treatment: float = 2.0
+    exam_penalty_threshold: int = 3
+    tool_call_penalty_threshold: int = 6
+    token_penalty_threshold: int = 900
+    exam_penalty_scale: float = 0.1
+    tool_call_penalty_scale: float = 0.1
+    token_penalty_scale: float = 0.05
+    mixed_cost_bonus_scale: float = 0.1
+    mixed_efficiency_bonus_scale: float = 0.1
 
     # Judger 配置
     judger_model: str = "Baichuan-M2"
@@ -724,6 +737,227 @@ def cost_reward(
     return rewards
 
 
+def _normalise_keywords(raw_keywords: Any) -> List[str]:
+    """把工具参数里的 keywords 统一清洗成非空列表。"""
+    if isinstance(raw_keywords, str):
+        keywords = raw_keywords.split(",")
+    elif isinstance(raw_keywords, list):
+        keywords = raw_keywords
+    else:
+        return []
+
+    return [str(keyword).strip() for keyword in keywords if str(keyword).strip()]
+
+
+def _trajectory_usage_stats(trajectory: List[Dict]) -> Dict[str, Any]:
+    """统计混合奖励需要的工具使用量。"""
+    action_types = set()
+    total_tool_calls = 0
+    exam_items = 0
+
+    for step in trajectory:
+        parsed = step.get("parsed", {})
+        action = parsed.get("action", "")
+
+        if action in {"ASK", "EXAM", "KNOWLEDGE"}:
+            action_types.add(action)
+            total_tool_calls += 1
+
+        if action == "EXAM":
+            exam_items += len(_normalise_keywords(parsed.get("keywords", [])))
+
+    return {
+        "action_types": action_types,
+        "total_tool_calls": total_tool_calls,
+        "exam_items": exam_items,
+    }
+
+
+def _estimate_completion_tokens(completion: List[Dict]) -> int:
+    """
+    粗略估计 completion token 数。
+
+    训练 reward 阶段拿不到 tokenizer，这里用中文字符约等于 1 token、
+    非中文字符约 4 字符 1 token 的保守近似，用于过长输出惩罚。
+    """
+    chunks = []
+    for turn in completion:
+        if turn.get("role") != "assistant":
+            continue
+
+        content = turn.get("content", "")
+        if content:
+            chunks.append(str(content))
+
+        tool_calls = turn.get("tool_calls")
+        if tool_calls:
+            chunks.append(json.dumps(tool_calls, ensure_ascii=False))
+
+    text = "\n".join(chunks)
+    if not text:
+        return 0
+
+    cjk_chars = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+    non_cjk_chars = max(0, len(text) - cjk_chars)
+    return int(cjk_chars + non_cjk_chars / 4)
+
+
+def _fallback_quality_scores(
+    gt_diag: List[str],
+    gt_treat: List[str],
+    agent_diagnosis: str,
+    agent_treatment: str,
+) -> Tuple[float, float]:
+    """Judger 失败时给混合奖励使用的诊断/治疗分。"""
+    diagnosis_score = 0.0
+    treatment_score = 0.0
+
+    if gt_diag:
+        diagnosis_score = 1.0
+        for diag in gt_diag:
+            if isinstance(diag, str) and diag.lower() in agent_diagnosis.lower():
+                diagnosis_score = 4.0
+                break
+
+    if gt_treat:
+        treatment_score = 1.0
+        for treat in gt_treat:
+            if isinstance(treat, str) and treat.lower() in agent_treatment.lower():
+                treatment_score = 4.0
+                break
+
+    return diagnosis_score, treatment_score
+
+
+def _rank_cost_bonuses(trajectories: List[List[Dict]], config: RewardConfig) -> List[float]:
+    """按 batch 内 proxy cost 排序，低成本得到小幅 bonus。"""
+    n = len(trajectories)
+    if n <= 1:
+        return [0.0] * n
+
+    costs = [
+        _estimate_trajectory_cost(trajectory) if trajectory else float("inf")
+        for trajectory in trajectories
+    ]
+
+    finite_costs = [cost for cost in costs if cost != float("inf")]
+    if not finite_costs:
+        return [0.0] * n
+
+    sorted_indices = sorted(range(n), key=lambda i: costs[i])
+    ranks = [0] * n
+    for rank, idx in enumerate(sorted_indices):
+        ranks[idx] = rank
+
+    max_rank = n - 1
+    return [
+        config.mixed_cost_bonus_scale * (1.0 - rank / max_rank)
+        for rank in ranks
+    ]
+
+
+def _efficiency_bonus_from_stats(stats: Dict[str, Any], config: RewardConfig) -> float:
+    """质量达标后才发放的效率 bonus，不再对未达标样本追加负奖励。"""
+    action_types = stats["action_types"]
+    total_tool_calls = stats["total_tool_calls"]
+    has_ask_exam = ("ASK" in action_types) and ("EXAM" in action_types)
+
+    if not has_ask_exam or total_tool_calls < config.min_tool_calls:
+        return 0.0
+
+    raw_bonus = config.tool_base_reward + config.efficiency_scale / (total_tool_calls + 1)
+    return config.mixed_efficiency_bonus_scale * max(0.0, raw_bonus)
+
+
+def mixed_quality_cost_efficiency_reward(
+    completions: List[List[Dict]],
+    ground_truth_diagnosis: List[List[str]],
+    ground_truth_treatment: List[List[str]],
+    ground_truth_avoid: List[List[str]],
+    chief_complaint: List[str],
+    case_id: List[str],
+    reward_config: Optional[RewardConfig] = None,
+    **kwargs
+) -> List[float]:
+    """
+    混合奖励方案：
+    1. 主奖励仍然是 Judger 的诊断分 + 治疗分。
+    2. 对明显浪费的检查数、工具调用数、输出长度做轻量扣分。
+    3. 只有诊断和治疗达到质量门槛后，才给低成本/高效率小幅 bonus。
+    """
+    config = reward_config or RewardConfig()
+    judger = get_judger(config) if config.enable_judger else None
+
+    trajectories = [_extract_trajectory_from_completion(completion) for completion in completions]
+    cost_bonuses = _rank_cost_bonuses(trajectories, config)
+    rewards = []
+
+    for idx, (completion, trajectory, gt_diag, gt_treat, gt_avoid, complaint, cid) in enumerate(zip(
+        completions, trajectories, ground_truth_diagnosis, ground_truth_treatment,
+        ground_truth_avoid, chief_complaint, case_id
+    )):
+        agent_diagnosis, agent_treatment = _extract_final_output(completion)
+        ground_truth = {
+            "diagnosis": gt_diag if gt_diag else [],
+            "treatment": gt_treat if gt_treat else [],
+            "avoid": gt_avoid if gt_avoid else [],
+        }
+
+        try:
+            if judger is None:
+                raise RuntimeError("Judger disabled")
+
+            eval_result = judger.evaluate(
+                case_id=cid,
+                chief_complaint=complaint,
+                ground_truth=ground_truth,
+                trajectory=trajectory,
+                agent_diagnosis=agent_diagnosis,
+                agent_treatment=agent_treatment,
+            )
+            diagnosis_score = float(eval_result.diagnosis_score)
+            treatment_score = float(eval_result.treatment_score)
+        except Exception as e:
+            if config.enable_judger:
+                print(f"[Mixed Reward Warning] Judger failed for {cid}: {e}")
+            diagnosis_score, treatment_score = _fallback_quality_scores(
+                gt_diag, gt_treat, agent_diagnosis, agent_treatment
+            )
+
+        reward = config.diagnosis_weight * diagnosis_score
+        reward += config.treatment_weight * treatment_score
+
+        stats = _trajectory_usage_stats(trajectory)
+        total_tokens = _estimate_completion_tokens(completion)
+
+        if stats["exam_items"] > config.exam_penalty_threshold:
+            reward -= config.exam_penalty_scale * (
+                stats["exam_items"] - config.exam_penalty_threshold
+            )
+
+        if stats["total_tool_calls"] > config.tool_call_penalty_threshold:
+            reward -= config.tool_call_penalty_scale * (
+                stats["total_tool_calls"] - config.tool_call_penalty_threshold
+            )
+
+        if total_tokens > config.token_penalty_threshold:
+            reward -= config.token_penalty_scale * (
+                (total_tokens - config.token_penalty_threshold) / 100.0
+            )
+
+        quality_passed = (
+            diagnosis_score >= config.quality_gate_diagnosis
+            and treatment_score >= config.quality_gate_treatment
+        )
+        if quality_passed:
+            reward += cost_bonuses[idx]
+            reward += _efficiency_bonus_from_stats(stats, config)
+
+        rewards.append(reward)
+
+    return rewards
+
+
 def _estimate_trajectory_cost(trajectory: List[Dict]) -> float:
     """
     基于轨迹估算费用（规则实现，不调用 API）
@@ -761,19 +995,61 @@ def build_reward_functions(reward_config: RewardConfig) -> List:
     Returns:
         List: 奖励函数列表
     """
+    if reward_config.enable_mixed_reward:
+        def mixed_reward_func(completions, **kwargs):
+            return mixed_quality_cost_efficiency_reward(
+                completions=completions,
+                reward_config=reward_config,
+                **kwargs,
+            )
+
+        mixed_reward_func.__name__ = "mixed_quality_cost_efficiency_reward"
+
+        print(
+            "[Reward] 已启用混合奖励: "
+            f"quality=judger({reward_config.diagnosis_weight}+{reward_config.treatment_weight}), "
+            f"gate=diag>={reward_config.quality_gate_diagnosis}/treat>={reward_config.quality_gate_treatment}, "
+            f"penalty=exam>{reward_config.exam_penalty_threshold}*{reward_config.exam_penalty_scale}, "
+            f"calls>{reward_config.tool_call_penalty_threshold}*{reward_config.tool_call_penalty_scale}, "
+            f"tokens>{reward_config.token_penalty_threshold}*{reward_config.token_penalty_scale}, "
+            f"bonus=cost*{reward_config.mixed_cost_bonus_scale}+eff*{reward_config.mixed_efficiency_bonus_scale}"
+        )
+        return [mixed_reward_func]
+
     reward_funcs = []
 
     # 核心奖励：Judger 评分（诊断、治疗、安全）
     if reward_config.enable_judger:
-        reward_funcs.append(judger_reward)
+        def judger_reward_func(completions, **kwargs):
+            return judger_reward(
+                completions=completions,
+                reward_config=reward_config,
+                **kwargs,
+            )
+        judger_reward_func.__name__ = "judger_reward"
+        reward_funcs.append(judger_reward_func)
 
     # 工具效率奖励
     if reward_config.enable_tool_efficiency:
-        reward_funcs.append(tool_efficiency_reward)
+        def tool_efficiency_reward_func(completions, **kwargs):
+            return tool_efficiency_reward(
+                completions=completions,
+                reward_config=reward_config,
+                **kwargs,
+            )
+        tool_efficiency_reward_func.__name__ = "tool_efficiency_reward"
+        reward_funcs.append(tool_efficiency_reward_func)
 
     # 成本奖励
     if reward_config.enable_cost_reward:
-        reward_funcs.append(cost_reward)
+        def cost_reward_func(completions, **kwargs):
+            return cost_reward(
+                completions=completions,
+                reward_config=reward_config,
+                **kwargs,
+            )
+        cost_reward_func.__name__ = "cost_reward"
+        reward_funcs.append(cost_reward_func)
 
     print(f"[Reward] 已启用 {len(reward_funcs)} 个奖励函数: judger={reward_config.enable_judger}(诊断+治疗), efficiency={reward_config.enable_tool_efficiency}, cost={reward_config.enable_cost_reward}")
     return reward_funcs
@@ -925,6 +1201,71 @@ def main():
         default="https://api.baichuan-ai.com/v1",
         help="Judger API 地址",
     )
+    parser.add_argument(
+        "--disable-mixed-reward",
+        action="store_true",
+        help="禁用混合奖励，回退到原来的多 reward 相加模式",
+    )
+    parser.add_argument(
+        "--quality-gate-diagnosis",
+        type=float,
+        default=3.0,
+        help="发放成本/效率 bonus 所需的最低诊断分",
+    )
+    parser.add_argument(
+        "--quality-gate-treatment",
+        type=float,
+        default=2.0,
+        help="发放成本/效率 bonus 所需的最低治疗分",
+    )
+    parser.add_argument(
+        "--exam-penalty-threshold",
+        type=int,
+        default=3,
+        help="超过多少个检查项目后开始扣分",
+    )
+    parser.add_argument(
+        "--tool-call-penalty-threshold",
+        type=int,
+        default=6,
+        help="超过多少次工具调用后开始扣分",
+    )
+    parser.add_argument(
+        "--token-penalty-threshold",
+        type=int,
+        default=900,
+        help="completion 粗略 token 数超过该值后开始扣分",
+    )
+    parser.add_argument(
+        "--exam-penalty-scale",
+        type=float,
+        default=0.1,
+        help="每个超额检查项目的扣分",
+    )
+    parser.add_argument(
+        "--tool-call-penalty-scale",
+        type=float,
+        default=0.1,
+        help="每次超额工具调用的扣分",
+    )
+    parser.add_argument(
+        "--token-penalty-scale",
+        type=float,
+        default=0.05,
+        help="每超 100 个粗略 token 的扣分",
+    )
+    parser.add_argument(
+        "--mixed-cost-bonus-scale",
+        type=float,
+        default=0.1,
+        help="质量达标后，batch 内低成本排序 bonus 的最高值",
+    )
+    parser.add_argument(
+        "--mixed-efficiency-bonus-scale",
+        type=float,
+        default=0.1,
+        help="质量达标后，工具效率 bonus 的缩放系数",
+    )
 
     # SwanLab 日志参数
     parser.add_argument(
@@ -982,6 +1323,17 @@ def main():
         enable_cost_reward=args.enable_cost_reward,
         enable_tool_efficiency=not args.disable_tool_efficiency,
         enable_judger=not args.disable_judger,
+        enable_mixed_reward=not args.disable_mixed_reward,
+        quality_gate_diagnosis=args.quality_gate_diagnosis,
+        quality_gate_treatment=args.quality_gate_treatment,
+        exam_penalty_threshold=args.exam_penalty_threshold,
+        tool_call_penalty_threshold=args.tool_call_penalty_threshold,
+        token_penalty_threshold=args.token_penalty_threshold,
+        exam_penalty_scale=args.exam_penalty_scale,
+        tool_call_penalty_scale=args.tool_call_penalty_scale,
+        token_penalty_scale=args.token_penalty_scale,
+        mixed_cost_bonus_scale=args.mixed_cost_bonus_scale,
+        mixed_efficiency_bonus_scale=args.mixed_efficiency_bonus_scale,
         judger_model=args.judger_model,
         judger_base_url=args.judger_base_url,
     )

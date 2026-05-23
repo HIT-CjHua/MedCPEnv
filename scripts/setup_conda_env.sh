@@ -65,8 +65,6 @@ pip install \
     "openai>=1.0.0" \
     "python-dotenv>=1.0.0" \
     "tqdm>=4.65.0" \
-    "chromadb>=0.4.0" \
-    "numpy>=1.24.0" \
     "datasets>=2.14.0" \
     "accelerate>=0.24.0" \
     "jmespath>=1.0.0" \
@@ -121,5 +119,5 @@ echo "============================================================"
 echo ""
 echo "激活环境: conda activate ${ENV_NAME}"
 echo "安装项目: pip install -e /path/to/MedAgent"
-echo "运行训练: bash scripts/train_multi_gpu.sh --model Qwen/Qwen3-4B"
+echo "运行训练: bash scripts/train_multi_gpu.sh --model /dev/shm/model/Qwen3-4B"
 echo "============================================================"

@@ -138,6 +138,7 @@ class LLMClient:
         self.model_name = model_name
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.max_tokens_cap = int(os.getenv("MEDAGENT_MAX_TOKENS", "0") or "0")
         self.timeout = timeout
 
         self._client = OpenAI(
@@ -145,6 +146,12 @@ class LLMClient:
             api_key=self.api_key,
             timeout=self.timeout,
         )
+
+    def _resolve_max_tokens(self, max_tokens: Optional[int] = None) -> int:
+        resolved = max_tokens if max_tokens is not None else self.max_tokens
+        if self.max_tokens_cap > 0:
+            return min(resolved, self.max_tokens_cap)
+        return resolved
 
     def _build_messages(
         self,
@@ -197,7 +204,7 @@ class LLMClient:
             "model": self.model_name,
             "messages": msgs,
             "temperature": temperature if temperature is not None else self.temperature,
-            "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
+            "max_tokens": self._resolve_max_tokens(max_tokens),
         }
 
         if tools:
@@ -250,7 +257,7 @@ class LLMClient:
             "model": self.model_name,
             "messages": msgs,
             "temperature": temperature if temperature is not None else self.temperature,
-            "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
+            "max_tokens": self._resolve_max_tokens(max_tokens),
             "stream": True,
             "stream_options": {"include_usage": True},
         }

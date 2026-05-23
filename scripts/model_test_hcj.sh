@@ -18,7 +18,7 @@ MODEL_PATH=""
 LORA_PATH=""
 N=100
 DATA="exp/data/benchmark_1000.jsonl"
-DEPLOY_PORT=8000
+DEPLOY_PORT=30002
 MODEL_NAME=""
 
 # ============================ 解析参数 ============================
@@ -69,40 +69,40 @@ if [ -z "$MODEL_NAME" ]; then
     echo "自动设置模型名称: $MODEL_NAME"
 fi
 
-# ============================ 部署模型 ============================
-echo "============================================================"
-echo "模型部署"
-echo "============================================================"
-echo "Base 模型: ${MODEL_PATH}"
-if [ -n "$LORA_PATH" ]; then
-    echo "LoRA 适配器: ${LORA_PATH}"
-    DEPLOY_CMD="CUDA_VISIBLE_DEVICES=1 vllm serve ${MODEL_PATH} --lora-modules lora=${LORA_PATH} --port ${DEPLOY_PORT} --enable-lora --max-lora-rank 16"
-else
-    echo "无 LoRA 适配器"
-    DEPLOY_CMD="CUDA_VISIBLE_DEVICES=1 vllm serve ${MODEL_PATH} --port ${DEPLOY_PORT}"
-fi
-echo "部署命令: ${DEPLOY_CMD}"
-echo ""
+# # ============================ 部署模型 ============================
+# echo "============================================================"
+# echo "模型部署"
+# echo "============================================================"
+# echo "Base 模型: ${MODEL_PATH}"
+# if [ -n "$LORA_PATH" ]; then
+#     echo "LoRA 适配器: ${LORA_PATH}"
+#     DEPLOY_CMD="CUDA_VISIBLE_DEVICES=1 vllm serve ${MODEL_PATH} --lora-modules lora=${LORA_PATH} --port ${DEPLOY_PORT} --enable-lora --max-lora-rank 16"
+# else
+#     echo "无 LoRA 适配器"
+#     DEPLOY_CMD="CUDA_VISIBLE_DEVICES=1 vllm serve ${MODEL_PATH} --port ${DEPLOY_PORT}"
+# fi
+# echo "部署命令: ${DEPLOY_CMD}"
+# echo ""
 
-# 启动 vLLM 服务（后台）
-eval ${DEPLOY_CMD} &
-VLLM_PID=$!
-echo "vLLM 服务已启动 (PID: ${VLLM_PID})"
+# # 启动 vLLM 服务（后台）
+# eval ${DEPLOY_CMD} &
+# VLLM_PID=$!
+# echo "vLLM 服务已启动 (PID: ${VLLM_PID})"
 
-# 等待服务就绪
-echo "等待服务就绪..."
-for i in $(seq 1 60); do
-    if curl -s http://localhost:${DEPLOY_PORT}/v1/models > /dev/null 2>&1; then
-        echo "服务就绪!"
-        break
-    fi
-    if [ $i -eq 60 ]; then
-        echo "服务启动超时 (60s)"
-        kill $VLLM_PID 2>/dev/null
-        exit 1
-    fi
-    sleep 1
-done
+# # 等待服务就绪
+# echo "等待服务就绪..."
+# for i in $(seq 1 60); do
+#     if curl -s http://localhost:${DEPLOY_PORT}/v1/models > /dev/null 2>&1; then
+#         echo "服务就绪!"
+#         break
+#     fi
+#     if [ $i -eq 60 ]; then
+#         echo "服务启动超时 (60s)"
+#         kill $VLLM_PID 2>/dev/null
+#         exit 1
+#     fi
+#     sleep 1
+# done
 
 # ============================ 运行 Benchmark ============================
 echo ""
@@ -124,15 +124,15 @@ REJUDGE_CMD="python exp/rejudge.py --models ${MODEL_NAME} --n ${N} --output exp/
 echo "执行: ${REJUDGE_CMD}"
 eval ${REJUDGE_CMD}
 
-# ============================ 清理 ============================
-echo ""
-echo "============================================================"
-echo "清理"
-echo "============================================================"
-echo "停止 vLLM 服务 (PID: ${VLLM_PID})..."
-kill $VLLM_PID 2>/dev/null
-wait $VLLM_PID 2>/dev/null
-echo "服务已停止"
-echo "============================================================"
-echo "测试完成!"
-echo "============================================================"
+# # ============================ 清理 ============================
+# echo ""
+# echo "============================================================"
+# echo "清理"
+# echo "============================================================"
+# echo "停止 vLLM 服务 (PID: ${VLLM_PID})..."
+# kill $VLLM_PID 2>/dev/null
+# wait $VLLM_PID 2>/dev/null
+# echo "服务已停止"
+# echo "============================================================"
+# echo "测试完成!"
+# echo "============================================================"

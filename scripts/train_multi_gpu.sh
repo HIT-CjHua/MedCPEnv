@@ -7,15 +7,15 @@
 #   bash scripts/train_multi_gpu.sh [OPTIONS]
 #
 # 示例:
-#   bash scripts/train_multi_gpu.sh --model Qwen/Qwen2.5-3B --max-steps 1000
-#   bash scripts/train_multi_gpu.sh --config deepspeed --model Qwen/Qwen2.5-7B
+#   bash scripts/train_multi_gpu.sh --model /dev/shm/model/Qwen3-4B --max-steps 1000
+#   bash scripts/train_multi_gpu.sh --config deepspeed --model /dev/shm/model/Qwen3-4B
 
 set -e
 
 # 默认配置
 CONFIG="multi_gpu"  # multi_gpu | deepspeed_zero2 | deepspeed_zero3
 NUM_GPUS=2
-MODEL="Qwen/Qwen2.5-3B"
+MODEL="/dev/shm/model/Qwen3-4B"
 MAX_STEPS=500
 BATCH_SIZE=4
 DATA="data/train.jsonl"
@@ -58,7 +58,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --config        Accelerate config: multi_gpu | deepspeed_zero2 | deepspeed_zero3 (default: multi_gpu)"
             echo "  --num-gpus      Number of GPUs (default: 2)"
-            echo "  --model         Base model name or path (default: Qwen/Qwen2.5-3B)"
+            echo "  --model         Base model name or path (default: /dev/shm/model/Qwen3-4B)"
             echo "  --max-steps     Maximum training steps (default: 500)"
             echo "  --batch-size    Per-device batch size (default: 4)"
             echo "  --data          Training data path (default: data/train.jsonl)"

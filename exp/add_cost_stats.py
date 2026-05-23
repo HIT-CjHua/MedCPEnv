@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src.medagent.cost import CostEvaluator
-from src.medagent.judger import Judger
+from src.medagent. import Judger
 
 RESULTS_DIR = PROJECT_ROOT / "exp" / "results"
 DATA_PATH = PROJECT_ROOT / "data" / "datasets" / "benchmark_1000.jsonl"

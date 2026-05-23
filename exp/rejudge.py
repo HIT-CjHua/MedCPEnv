@@ -70,12 +70,19 @@ def load_checkpoint_entries(model_name: str) -> list:
     path = os.path.join(RESULTS_DIR, f"checkpoint_{model_name}.jsonl")
     if not os.path.exists(path):
         return []
-    entries = []
+    entries_by_case = {}
+    order = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             if line.strip():
-                entries.append(json.loads(line))
-    return entries
+                entry = json.loads(line)
+                case_id = entry.get("case_id")
+                if not case_id:
+                    continue
+                if case_id not in entries_by_case:
+                    order.append(case_id)
+                entries_by_case[case_id] = entry
+    return [entries_by_case[case_id] for case_id in order]
 
 
 def save_rejudge_results(model_name: str, results: list, output_dir: str):

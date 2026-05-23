@@ -7,7 +7,7 @@ REM 使用方法:
 REM   scripts\train_multi_gpu.bat [OPTIONS]
 REM
 REM 示例:
-REM   scripts\train_multi_gpu.bat --model Qwen/Qwen2.5-3B --max-steps 1000
+REM   scripts\train_multi_gpu.bat --model /dev/shm/model/Qwen3-4B --max-steps 1000
 REM   scripts\train_multi_gpu.bat --config deepspeed_zero2 --model Qwen/Qwen2.5-7B --disable-kb
 
 setlocal enabledelayedexpansion
@@ -15,7 +15,7 @@ setlocal enabledelayedexpansion
 REM 默认配置
 set CONFIG=multi_gpu
 set NUM_GPUS=2
-set MODEL=Qwen/Qwen2.5-3B
+set MODEL=/dev/shm/model/Qwen3-4B
 set MAX_STEPS=500
 set BATCH_SIZE=4
 set DATA=data/train.jsonl

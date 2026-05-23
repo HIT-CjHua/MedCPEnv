@@ -1,5 +1,5 @@
 """
-MedAgent Benchmark 雷达图生成脚本
+MedCostAgent Benchmark 雷达图生成脚本
 
 基于 exp/output/main_sheet.md 数据生成多维度雷达图
 """
@@ -15,7 +15,7 @@ matplotlib.rcParams['axes.unicode_minus'] = False
 # Data (from main_sheet.md)
 MODELS = [
     "gpt-5.4",
-    "qwen3-max-2026-01-23",
+    "qwen3-max",
     "qwen3.5-plus",
     "gemini-3.1-pro-preview",
     "MiniMax-M2.5",
@@ -34,7 +34,7 @@ MODELS = [
 
 DATA = {
     "gpt-5.4":         {"diag": 3.54, "treat": 2.64, "safe": 4.89, "steps": 4.94, "cost": 1093},
-    "qwen3-max-2026-01-23": {"diag": 3.21, "treat": 2.35, "safe": 4.88, "steps": 7.71, "cost": 784},
+    "qwen3-max": {"diag": 3.21, "treat": 2.35, "safe": 4.88, "steps": 7.71, "cost": 784},
     "qwen3.5-plus":    {"diag": 3.18, "treat": 2.41, "safe": 4.81, "steps": 7.27, "cost": 1226},
     "gemini-3.1-pro-preview": {"diag": 3.04, "treat": 2.32, "safe": 4.86, "steps": 7.19, "cost": 3749},
     "MiniMax-M2.5":    {"diag": 3.11, "treat": 2.33, "safe": 4.78, "steps": 7.12, "cost": 2208},
@@ -92,7 +92,7 @@ def plot_radar_top5(output_path="exp/output/radar_top5.png"):
     ax.set_yticklabels(['0.2', '0.4', '0.6', '0.8', '1.0'], fontsize=10)
     
     ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.1), fontsize=12)
-    ax.set_title('MedAgent Benchmark - Top 5 Models', fontsize=16, fontweight='bold', pad=20)
+    ax.set_title('MedCostAgent Benchmark - Top 5 Models', fontsize=16, fontweight='bold', pad=20)
     
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
@@ -122,7 +122,7 @@ def plot_radar_all(output_path="exp/output/radar_all.png"):
     ax.set_yticklabels(['0.2', '0.4', '0.6', '0.8', '1.0'], fontsize=10)
     
     ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.1), fontsize=10)
-    ax.set_title('MedAgent Benchmark - All Models', fontsize=16, fontweight='bold', pad=20)
+    ax.set_title('MedCostAgent Benchmark - All Models', fontsize=16, fontweight='bold', pad=20)
     
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
@@ -158,7 +158,7 @@ def plot_radar_facets(output_path="exp/output/radar_facets.png"):
     
     axes[5].set_visible(False)
     
-    fig.suptitle('MedAgent Benchmark - Top 5 Models (Faceted)', fontsize=18, fontweight='bold', y=1.02)
+    fig.suptitle('MedCostAgent Benchmark - Top 5 Models (Faceted)', fontsize=18, fontweight='bold', y=1.02)
     
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
@@ -167,7 +167,7 @@ def plot_radar_facets(output_path="exp/output/radar_facets.png"):
 
 
 if __name__ == "__main__":
-    print("Generating MedAgent Benchmark radar charts...")
+    print("Generating MedCostAgent Benchmark radar charts...")
     plot_radar_top5()
     plot_radar_all()
     plot_radar_facets()
