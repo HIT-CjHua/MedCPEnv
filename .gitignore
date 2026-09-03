@@ -134,3 +134,6 @@ scripts/batch_mimic_pipeline.py
 # -----------------------------------------------------------------------------
 memory/
 .claude/
+
+src/medagent/judger-3judge.txt
+v5_0.md
