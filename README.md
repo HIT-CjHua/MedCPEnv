@@ -18,18 +18,6 @@ MedCPEnv 用于研究和训练 LLM 在模拟医院场景中的决策能力。项
 - 提供 benchmark、rejudge、雷达图和训练脚本
 - 兼容本地部署模型与 OpenAI 兼容接口
 
-## 目录说明
-
-- `src/`：核心代码，包含智能体、工具系统、知识库、评测器与数据结构
-- `exp/`：实验代码，包含 benchmark、分析、rejudge 与结果汇总
-- `scripts/`：训练、评测、部署与环境配置脚本
-
-更多细节见：
-
-- [src/README.md](src/README.md)
-- [exp/README.md](exp/README.md)
-- [scripts/README.md](scripts/README.md)
-
 ## 快速开始
 
 ### 安装依赖
@@ -69,6 +57,46 @@ python exp/plot_radar.py
 bash scripts/agentic_rl.sh
 ```
 
+## 强化学习训练
+
+项目支持基于 TRL GRPO 的医疗 Agent 强化学习训练。训练目标主要包括：
+
+- 合理使用 `ASK`、`EXAM`、`KNOWLEDGE` 工具
+- 提高诊断和治疗建议的正确性
+- 降低对医疗禁忌的违反
+- 控制工具调用次数，并保持输出格式稳定
+
+### 训练流程
+
+1. 安装依赖并配置好模型 API Key。
+2. 准备训练数据与知识数据，确保评测所需服务可用。
+3. 先跑一次单模型训练，确认输出和 reward 曲线正常。
+4. 再使用一键脚本批量跑不同 reward 组合，做对比实验。
+5. 训练完成后，用评测流程检查诊断、治疗、安全性和成本表现。
+
+### 训练示例
+
+```bash
+# 默认训练
+python scripts/agentic_rl.py
+
+# 指定模型并启用 LoRA
+python scripts/agentic_rl.py \
+  --model Qwen/Qwen2.5-3B \
+  --use-lora \
+  --lora-r 16
+
+# 一键运行多组训练实验
+bash scripts/agentic_rl.sh
+```
+
+### 奖励设计
+
+- `correctness_reward`：诊断与治疗正确性
+- `avoid_violation_reward`：医疗禁忌约束
+- `tool_usage_reward`：工具使用效率
+- `structure_reward`：输出格式约束
+
 ## 核心能力
 
 ### 统一工具层
@@ -92,9 +120,3 @@ bash scripts/agentic_rl.sh
 - 多模型 benchmark
 - Agentic RL 训练
 - 结果汇总与可视化
-
-## 相关文档
-
-- [src/README.md](src/README.md)
-- [exp/README.md](exp/README.md)
-- [scripts/README.md](scripts/README.md)
